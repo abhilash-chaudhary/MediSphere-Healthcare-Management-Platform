@@ -149,8 +149,10 @@ export default function App() {
       if (dashRes.data?.success) {
         dispatch(setDashboard360(dashRes.data.data));
       }
+      setActiveTab('patient360');
     } catch (err) {
       console.error('Patient 360 load error:', err);
+      setActiveTab('patient360');
     }
   };
 

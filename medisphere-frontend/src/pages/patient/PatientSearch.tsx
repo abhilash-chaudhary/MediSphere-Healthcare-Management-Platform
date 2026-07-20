@@ -60,44 +60,50 @@ export default function PatientSearch({ patients, onSearch, onSelectPatient }: P
 
         {patients.length === 0 ? (
           <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '14px' }}>
-            No records match the current query. Try searching for "John" or "Doe".
+            No records match the current query. Try searching for "John", "Smith", or click Query Registry to list all patients.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {patients.map((patient) => (
-              <div
-                key={patient.id}
-                style={{
-                  padding: '16px 20px',
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius-sm)',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}
-              >
-                <div>
-                  <strong style={{ fontSize: '16px', color: '#fff', display: 'block' }}>
-                    {patient.firstName} {patient.lastName}
-                  </strong>
-                  <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                    <span>ID: <strong>{patient.id}</strong></span>
-                    <span>DOB: <strong>{patient.dateOfBirth}</strong></span>
-                    <span>Gender: <strong>{patient.gender}</strong></span>
-                    <span>Email: <strong>{patient.email}</strong></span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => onSelectPatient(patient.id)}
-                  className="btn btn-secondary"
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 16px', fontSize: '12px' }}
+            {patients.map((patient) => {
+              const pId = patient.id || (patient as any)._id;
+              return (
+                <div
+                  key={pId}
+                  style={{
+                    padding: '18px 24px',
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: 'var(--radius-sm)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '16px'
+                  }}
                 >
-                  <Eye size={14} /> Open 360 View
-                </button>
-              </div>
-            ))}
+                  <div>
+                    <strong style={{ fontSize: '17px', color: '#fff', display: 'block' }}>
+                      {patient.firstName} {patient.lastName}
+                    </strong>
+                    <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px', flexWrap: 'wrap' }}>
+                      <span>ID: <strong style={{ color: 'var(--color-primary)' }}>{pId}</strong></span>
+                      <span>DOB: <strong>{patient.dateOfBirth}</strong></span>
+                      <span>Gender: <strong>{patient.gender}</strong></span>
+                      <span>Email: <strong>{patient.email}</strong></span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onSelectPatient(pId)}
+                    className="btn btn-primary"
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 20px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+                  >
+                    <Eye size={16} /> Open 360 View
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
