@@ -1,0 +1,69 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'eureka-discovery-server'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['discovery-server:8761']
+
+  - job_name: 'api-gateway'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['api-gateway:8080']
+
+  - job_name: 'auth-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['auth-service:8081']
+
+  - job_name: 'patient-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['patient-service:8082']
+
+  - job_name: 'fhir-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['fhir-service:8083']
+
+  - job_name: 'digital-twin-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['digital-twin-service:8084']
+
+  - job_name: 'consent-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['consent-service:8085']
+
+  - job_name: 'provider-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['provider-service:8086']
+
+  - job_name: 'wearable-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['wearable-service:8087']
+
+  - job_name: 'kafka-stream-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['kafka-stream-service:8088']
+
+  - job_name: 'notification-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['notification-service:8089']
+
+  - job_name: 'audit-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['audit-service:8090']
+
+  - job_name: 'dashboard-service'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['dashboard-service:8091']

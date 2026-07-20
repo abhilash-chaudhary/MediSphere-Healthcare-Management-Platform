@@ -1,0 +1,20 @@
+server:
+  port: 8093
+
+spring:
+  application:
+    name: explainability-service
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/medisphere_explanations
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

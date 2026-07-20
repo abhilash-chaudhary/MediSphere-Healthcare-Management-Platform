@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.infosys.medisphere</groupId>
+        <artifactId>infosys-medisphere-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>microservices-aggregator</artifactId>
+    <packaging>pom</packaging>
+    <name>Microservices-Aggregator</name>
+    <description>Aggregator for all Infosys MediSphere microservices</description>
+
+    <modules>
+        <module>auth-service</module>
+        <module>patient-service</module>
+        <module>fhir-service</module>
+        <module>digital-twin-service</module>
+        <module>consent-service</module>
+        <module>provider-service</module>
+        <module>wearable-service</module>
+        <module>kafka-stream-service</module>
+        <module>notification-service</module>
+        <module>audit-service</module>
+        <module>dashboard-service</module>
+        <module>ai-prediction-service</module>
+        <module>explainability-service</module>
+        <module>model-service</module>
+    </modules>
+</project>

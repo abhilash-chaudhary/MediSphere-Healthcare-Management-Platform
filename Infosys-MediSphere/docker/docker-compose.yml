@@ -1,0 +1,211 @@
+version: '3.8'
+
+services:
+  # Database Storage
+  mongodb:
+    image: mongo:latest
+    container_name: medisphere-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  # Message Broker Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: medisphere-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: medisphere-kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # Service Registry
+  discovery-server:
+    build: ../discovery-server
+    container_name: medisphere-discovery-server
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Centralized Config Store
+  config-server:
+    build: ../config-server
+    container_name: medisphere-config-server
+    ports:
+      - "8888:8888"
+    depends_on:
+      - discovery-server
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  # Gateway Access Point
+  api-gateway:
+    build: ../api-gateway
+    container_name: medisphere-api-gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      - discovery-server
+      - config-server
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  # Domain Microservices
+  auth-service:
+    build: ../microservices/auth-service
+    container_name: medisphere-auth-service
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongodb
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_auth
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  patient-service:
+    build: ../microservices/patient-service
+    container_name: medisphere-patient-service
+    ports:
+      - "8082:8082"
+    depends_on:
+      - mongodb
+      - kafka
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_patient
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  fhir-service:
+    build: ../microservices/fhir-service
+    container_name: medisphere-fhir-service
+    ports:
+      - "8083:8083"
+    depends_on:
+      - discovery-server
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  digital-twin-service:
+    build: ../microservices/digital-twin-service
+    container_name: medisphere-digital-twin-service
+    ports:
+      - "8084:8084"
+    depends_on:
+      - mongodb
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_twin
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  consent-service:
+    build: ../microservices/consent-service
+    container_name: medisphere-consent-service
+    ports:
+      - "8085:8085"
+    depends_on:
+      - mongodb
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_consent
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  provider-service:
+    build: ../microservices/provider-service
+    container_name: medisphere-provider-service
+    ports:
+      - "8086:8086"
+    depends_on:
+      - mongodb
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_provider
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  wearable-service:
+    build: ../microservices/wearable-service
+    container_name: medisphere-wearable-service
+    ports:
+      - "8087:8087"
+    depends_on:
+      - mongodb
+      - kafka
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_wearable
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  kafka-stream-service:
+    build: ../microservices/kafka-stream-service
+    container_name: medisphere-kafka-stream-service
+    ports:
+      - "8088:8088"
+    depends_on:
+      - mongodb
+      - kafka
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_stream
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  notification-service:
+    build: ../microservices/notification-service
+    container_name: medisphere-notification-service
+    ports:
+      - "8089:8089"
+    depends_on:
+      - mongodb
+      - kafka
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_notification
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  audit-service:
+    build: ../microservices/audit-service
+    container_name: medisphere-audit-service
+    ports:
+      - "8090:8090"
+    depends_on:
+      - mongodb
+      - kafka
+      - discovery-server
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/medisphere_audit
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+  dashboard-service:
+    build: ../microservices/dashboard-service
+    container_name: medisphere-dashboard-service
+    ports:
+      - "8091:8091"
+    depends_on:
+      - discovery-server
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+
+volumes:
+  mongo-data:

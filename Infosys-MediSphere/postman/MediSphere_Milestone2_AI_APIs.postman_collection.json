@@ -1,0 +1,226 @@
+{
+  "info": {
+    "name": "MediSphere Milestone 2 - AI Architecture APIs",
+    "description": "Complete Postman collection for testing all Milestone 2 AI microservice endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway_url", "value": "http://localhost:8080" },
+    { "key": "prediction_url", "value": "http://localhost:8092" },
+    { "key": "explanation_url", "value": "http://localhost:8093" },
+    { "key": "model_url", "value": "http://localhost:8094" },
+    { "key": "token", "value": "YOUR_JWT_TOKEN_HERE" }
+  ],
+  "item": [
+    {
+      "name": "AI Prediction Service",
+      "item": [
+        {
+          "name": "POST - Predict CVD Risk",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patientId\": \"PAT101\",\n  \"age\": 65,\n  \"bloodPressure\": 145,\n  \"bmi\": 32,\n  \"hba1c\": 7.5,\n  \"cholesterol\": 230,\n  \"heartRate\": 115\n}"
+            },
+            "url": "{{gateway_url}}/api/prediction/cvd"
+          }
+        },
+        {
+          "name": "POST - Predict Diabetes Risk",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patientId\": \"PAT101\",\n  \"age\": 55,\n  \"bloodPressure\": 130,\n  \"bmi\": 28,\n  \"hba1c\": 8.2,\n  \"cholesterol\": 200,\n  \"heartRate\": 90\n}"
+            },
+            "url": "{{gateway_url}}/api/prediction/diabetes"
+          }
+        },
+        {
+          "name": "GET - Prediction History",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/history/PAT101"
+          }
+        },
+        {
+          "name": "GET - Latest Prediction",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/latest/PAT101"
+          }
+        },
+        {
+          "name": "DELETE - Delete Prediction",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/PREDICTION_ID_HERE"
+          }
+        },
+        {
+          "name": "GET - Accuracy Metrics",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/accuracy"
+          }
+        },
+        {
+          "name": "GET - Calibration Metrics",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/calibration"
+          }
+        },
+        {
+          "name": "GET - Bias Audit",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/prediction/bias-audit"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Explainability Service",
+      "item": [
+        {
+          "name": "POST - Generate Explanation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"age\": 65,\n  \"bloodPressure\": 145,\n  \"bmi\": 32,\n  \"hba1c\": 7.5,\n  \"cholesterol\": 230,\n  \"heartRate\": 115,\n  \"riskLevel\": \"HIGH\"\n}"
+            },
+            "url": "{{gateway_url}}/api/explanation/PAT101"
+          }
+        },
+        {
+          "name": "GET - Get Explanation",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/explanation/PAT101"
+          }
+        },
+        {
+          "name": "GET - Validate Engine",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/explanation/validate"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Model Management Service",
+      "item": [
+        {
+          "name": "POST - Register Model",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": \"1.0\",\n  \"accuracy\": 91.4,\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": "{{gateway_url}}/api/model"
+          }
+        },
+        {
+          "name": "GET - All Models",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/model"
+          }
+        },
+        {
+          "name": "GET - Latest Active Model",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/model/latest"
+          }
+        },
+        {
+          "name": "PUT - Update Model Version",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accuracy\": 93.2,\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": "{{gateway_url}}/api/model/1.0"
+          }
+        },
+        {
+          "name": "DELETE - Delete Model Version",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/model/1.0"
+          }
+        },
+        {
+          "name": "GET - Model Status Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{gateway_url}}/api/model/status"
+          }
+        }
+      ]
+    }
+  ]
+}

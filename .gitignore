@@ -1,0 +1,27 @@
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Production build outputs & binaries
+dist/
+**/dist/
+target/
+**/target/
+jdk-21.0.2/
+**/jdk-21.0.2/
+
+# Environment variables & secrets
+.env
+.env.local
+*.env
+**/.env
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# IDE & OS files
+.DS_Store
+.vscode/
+.idea/

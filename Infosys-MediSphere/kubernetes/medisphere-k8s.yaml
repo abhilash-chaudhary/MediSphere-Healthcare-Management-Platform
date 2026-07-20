@@ -1,0 +1,723 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: medisphere-config
+  namespace: default
+data:
+  eureka.client.serviceUrl.defaultZone: "http://discovery-server:8761/eureka/"
+  spring.data.mongodb.uri: "mongodb://mongodb:27017/medisphere"
+  spring.kafka.bootstrap-servers: "kafka:9092"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: medisphere-secrets
+  namespace: default
+type: Opaque
+data:
+  # Secret placeholder "infosysmedisphereenterprisesecuritykey2026mustbelongenough" encoded in base64
+  jwt-secret: aW5mb3N5c21lZGlzcGhlcmVlbnRlcnByaXNlc2VjdXJpdHlreXkyMDI2bXVzdGJlbG9uZ2Vub3VnaA==
+---
+# MongoDB Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: default
+spec:
+  ports:
+    - port: 27017
+  selector:
+    app: mongodb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:latest
+          ports:
+            - containerPort: 27017
+---
+# Eureka Discovery Server Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-server
+  namespace: default
+spec:
+  ports:
+    - port: 8761
+  selector:
+    app: discovery-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: discovery-server
+  template:
+    metadata:
+      labels:
+        app: discovery-server
+    spec:
+      containers:
+        - name: discovery-server
+          image: infosys/medisphere-discovery-server:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8761
+---
+# API Gateway Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: default
+spec:
+  ports:
+    - port: 8080
+  selector:
+    app: api-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          image: infosys/medisphere-api-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Auth Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: default
+spec:
+  ports:
+    - port: 8081
+  selector:
+    app: auth-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          image: infosys/medisphere-auth-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_auth"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Patient Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: patient-service
+  namespace: default
+spec:
+  ports:
+    - port: 8082
+  selector:
+    app: patient-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patient-service
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: patient-service
+  template:
+    metadata:
+      labels:
+        app: patient-service
+    spec:
+      containers:
+        - name: patient-service
+          image: infosys/medisphere-patient-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_patient"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+# Zookeeper Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: default
+spec:
+  ports:
+    - port: 2181
+  selector:
+    app: zookeeper
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zookeeper
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:latest
+          ports:
+            - containerPort: 2181
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+---
+# Kafka Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: default
+spec:
+  ports:
+    - port: 9092
+  selector:
+    app: kafka
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:latest
+          ports:
+            - containerPort: 9092
+          env:
+            - name: KAFKA_BROKER_ID
+              value: "1"
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "zookeeper:2181"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka:9092"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT"
+---
+# Config Server Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: config-server
+  namespace: default
+spec:
+  ports:
+    - port: 8888
+  selector:
+    app: config-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: config-server
+  template:
+    metadata:
+      labels:
+        app: config-server
+    spec:
+      containers:
+        - name: config-server
+          image: infosys/medisphere-config-server:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8888
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# FHIR Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: fhir-service
+  namespace: default
+spec:
+  ports:
+    - port: 8083
+  selector:
+    app: fhir-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fhir-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fhir-service
+  template:
+    metadata:
+      labels:
+        app: fhir-service
+    spec:
+      containers:
+        - name: fhir-service
+          image: infosys/medisphere-fhir-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Digital Twin Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: digital-twin-service
+  namespace: default
+spec:
+  ports:
+    - port: 8084
+  selector:
+    app: digital-twin-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digital-twin-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: digital-twin-service
+  template:
+    metadata:
+      labels:
+        app: digital-twin-service
+    spec:
+      containers:
+        - name: digital-twin-service
+          image: infosys/medisphere-digital-twin-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8084
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_twin"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Consent Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: consent-service
+  namespace: default
+spec:
+  ports:
+    - port: 8085
+  selector:
+    app: consent-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consent-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consent-service
+  template:
+    metadata:
+      labels:
+        app: consent-service
+    spec:
+      containers:
+        - name: consent-service
+          image: infosys/medisphere-consent-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8085
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_consent"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Provider Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: provider-service
+  namespace: default
+spec:
+  ports:
+    - port: 8086
+  selector:
+    app: provider-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: provider-service
+  template:
+    metadata:
+      labels:
+        app: provider-service
+    spec:
+      containers:
+        - name: provider-service
+          image: infosys/medisphere-provider-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8086
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_provider"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Wearable Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: wearable-service
+  namespace: default
+spec:
+  ports:
+    - port: 8087
+  selector:
+    app: wearable-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wearable-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wearable-service
+  template:
+    metadata:
+      labels:
+        app: wearable-service
+    spec:
+      containers:
+        - name: wearable-service
+          image: infosys/medisphere-wearable-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8087
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_wearable"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Kafka Stream Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-stream-service
+  namespace: default
+spec:
+  ports:
+    - port: 8088
+  selector:
+    app: kafka-stream-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-stream-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-stream-service
+  template:
+    metadata:
+      labels:
+        app: kafka-stream-service
+    spec:
+      containers:
+        - name: kafka-stream-service
+          image: infosys/medisphere-kafka-stream-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8088
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_stream"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Notification Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: default
+spec:
+  ports:
+    - port: 8089
+  selector:
+    app: notification-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: notification-service
+          image: infosys/medisphere-notification-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8089
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_notification"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Audit Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+  namespace: default
+spec:
+  ports:
+    - port: 8090
+  selector:
+    app: audit-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+    spec:
+      containers:
+        - name: audit-service
+          image: infosys/medisphere-audit-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+          env:
+            - name: SPRING_DATA_MONGODB_URI
+              value: "mongodb://mongodb:27017/medisphere_audit"
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Dashboard Service Service & Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-service
+  namespace: default
+spec:
+  ports:
+    - port: 8091
+  selector:
+    app: dashboard-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard-service
+  template:
+    metadata:
+      labels:
+        app: dashboard-service
+    spec:
+      containers:
+        - name: dashboard-service
+          image: infosys/medisphere-dashboard-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8091
+          envFrom:
+            - configMapRef:
+                name: medisphere-config
+---
+# Ingress Routing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: medisphere-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080
+---
+# Horizontal Pod Autoscaler (HPA) for Patient Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: patient-service-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: patient-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75

@@ -1,0 +1,137 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: auth-service
+          uri: lb://auth-service
+          predicates:
+            - Path=/auth/**
+          filters:
+            - StripPrefix=0
+            - name: CircuitBreaker
+              args:
+                name: authServiceCircuitBreaker
+                fallbackUri: forward:/fallback/auth
+
+        - id: patient-service
+          uri: lb://patient-service
+          predicates:
+            - Path=/patients/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+            - name: CircuitBreaker
+              args:
+                name: patientServiceCircuitBreaker
+                fallbackUri: forward:/fallback/patient
+
+        - id: fhir-service
+          uri: lb://fhir-service
+          predicates:
+            - Path=/fhir/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: digital-twin-service
+          uri: lb://digital-twin-service
+          predicates:
+            - Path=/twin/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: consent-service
+          uri: lb://consent-service
+          predicates:
+            - Path=/consent/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: provider-service
+          uri: lb://provider-service
+          predicates:
+            - Path=/provider/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: wearable-service
+          uri: lb://wearable-service
+          predicates:
+            - Path=/wearable/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: dashboard-service
+          uri: lb://dashboard-service
+          predicates:
+            - Path=/dashboard/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: audit-service
+          uri: lb://audit-service
+          predicates:
+            - Path=/audit/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: kafka-stream-service
+          uri: lb://kafka-stream-service
+          predicates:
+            - Path=/stream/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/notifications/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        # ===== Milestone 2: AI Architecture Services =====
+        - id: ai-prediction-service
+          uri: lb://ai-prediction-service
+          predicates:
+            - Path=/api/prediction/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: explainability-service
+          uri: lb://explainability-service
+          predicates:
+            - Path=/api/explanation/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+        - id: model-service
+          uri: lb://model-service
+          predicates:
+            - Path=/api/model/**
+          filters:
+            - StripPrefix=0
+            - JwtAuthenticationFilter
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/

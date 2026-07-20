@@ -1,0 +1,221 @@
+{
+  "info": {
+    "name": "Infosys MediSphere API Gateway Collection",
+    "description": "Postman Collection for testing Gateway-routed APIs on Infosys MediSphere",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth Service",
+      "item": [
+        {
+          "name": "Register User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"johndoe\",\n  \"email\": \"john@doe.com\",\n  \"password\": \"Secret123\",\n  \"roles\": [\"PATIENT\"]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8080/auth/register",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"johndoe\",\n  \"password\": \"Secret123\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8080/auth/login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/auth/profile",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["auth", "profile"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Patient Service",
+      "item": [
+        {
+          "name": "Create Patient Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"pat-123\",\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\",\n  \"email\": \"john@doe.com\",\n  \"phoneNumber\": \"+1-555-0199\",\n  \"dateOfBirth\": \"1990-06-15\",\n  \"gender\": \"MALE\",\n  \"address\": \"100 MediSphere Way, NY\",\n  \"emergencyContactName\": \"Jane Doe\",\n  \"emergencyContactPhone\": \"+1-555-0100\",\n  \"medicalHistory\": [\"Hypertension\"],\n  \"insuranceProvider\": \"Aetna\",\n  \"insurancePolicyNumber\": \"POL-998877\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8080/patients",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["patients"]
+            }
+          }
+        },
+        {
+          "name": "Get Patient by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/patients/pat-123",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["patients", "pat-123"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "FHIR Integration Service",
+      "item": [
+        {
+          "name": "Get Patient R4 FHIR JSON",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/fhir/patient/pat-123",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["fhir", "patient", "pat-123"]
+            }
+          }
+        },
+        {
+          "name": "Sync External Hospital EHR",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/fhir/sync/pat-123",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["fhir", "sync", "pat-123"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Consent Service",
+      "item": [
+        {
+          "name": "Grant Access Consent",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patientId\": \"pat-123\",\n  \"doctorId\": \"doc-999\",\n  \"status\": \"GRANTED\",\n  \"authorizedResourceTypes\": [\"Vitals\", \"Medications\"]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8080/consent/grant",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["consent", "grant"]
+            }
+          }
+        },
+        {
+          "name": "Check Doctor Authorization",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/consent/check?patientId=pat-123&doctorId=doc-999&resourceType=Vitals",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["consent", "check"],
+              "query": [
+                { "key": "patientId", "value": "pat-123" },
+                { "key": "doctorId", "value": "doc-999" },
+                { "key": "resourceType", "value": "Vitals" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard Aggregator",
+      "item": [
+        {
+          "name": "Retrieve Patient 360 Dashboard View",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": {
+              "raw": "http://localhost:8080/dashboard/patient360?patientId=pat-123&doctorId=doc-999",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8080",
+              "path": ["dashboard", "patient360"],
+              "query": [
+                { "key": "patientId", "value": "pat-123" },
+                { "key": "doctorId", "value": "doc-999" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
