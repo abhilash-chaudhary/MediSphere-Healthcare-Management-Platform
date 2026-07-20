@@ -771,7 +771,7 @@ export default function App() {
           )}
 
           {/* ===== Milestone 2: AI Architecture Pages ===== */}
-          {activeTab === 'ai-prediction' && (user?.roles.includes('DOCTOR') || user?.roles.includes('ROLE_DOCTOR') || user?.roles.includes('ADMIN') || user?.roles.includes('ROLE_ADMIN')) && (
+          {activeTab === 'ai-prediction' && (
             <AIPredictionDashboard
               onNavigateToPrediction={(prediction: any) => {
                 setCurrentPrediction(prediction);
@@ -784,19 +784,22 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'prediction-result' && (user?.roles.includes('DOCTOR') || user?.roles.includes('ROLE_DOCTOR') || user?.roles.includes('ADMIN') || user?.roles.includes('ROLE_ADMIN')) && (
+          {activeTab === 'prediction-result' && (
             <PredictionResult
               prediction={currentPrediction}
               onBack={() => setActiveTab('ai-prediction')}
-              onViewExplanation={() => setActiveTab('shap-explanation')}
+              onViewExplanation={() => {
+                if (currentPrediction) setPredictionFormData(currentPrediction);
+                setActiveTab('shap-explanation');
+              }}
             />
           )}
 
-          {activeTab === 'shap-explanation' && (user?.roles.includes('DOCTOR') || user?.roles.includes('ROLE_DOCTOR') || user?.roles.includes('ADMIN') || user?.roles.includes('ROLE_ADMIN')) && (
+          {activeTab === 'shap-explanation' && (
             <ShapExplanation
-              patientId={currentPrediction?.patientId || selectedPatientId || ''}
+              patientId={currentPrediction?.patientId || selectedPatientId || user?.username || 'john_doe'}
               predictionData={predictionFormData || currentPrediction}
-              onBack={() => setActiveTab('prediction-result')}
+              onBack={() => setActiveTab(currentPrediction ? 'prediction-result' : 'ai-prediction')}
             />
           )}
 
