@@ -131,33 +131,33 @@ export default function App() {
   };
 
   const handleSelectPatient = async (patientId: string) => {
+    const targetId = patientId || selectedPatientId || user?.username || 'john_doe';
     try {
-      dispatch(setSelectedPatientId(patientId));
+      dispatch(setSelectedPatientId(targetId));
       
-      // Attempt consent verification, but don't block on failure
       let isAuthorized = true;
       try {
-        const consentRes = await api.get(`/consent/check?patientId=${patientId}&doctorId=${user?.username}&resourceType=Vitals`);
+        const consentRes = await api.get(`/consent/check?patientId=${targetId}&doctorId=${user?.username}&resourceType=Vitals`);
         isAuthorized = consentRes.data?.data !== false;
       } catch (consentErr) {
-        // If consent check fails, allow doctors to proceed
-        console.warn('Consent check unavailable, proceeding with access:', consentErr);
         isAuthorized = true;
       }
       dispatch(setConsentGranted(isAuthorized));
 
       // Load Patient 360 dashboard
-      const dashRes = await api.get(`/dashboard/patient360?patientId=${patientId}&doctorId=${user?.username}`);
+      const dashRes = await api.get(`/dashboard/patient360?patientId=${targetId}&doctorId=${user?.username}`);
       if (dashRes.data?.success) {
         dispatch(setDashboard360(dashRes.data.data));
-        setActiveTab('patient360');
-      } else {
-        alert('Failed to load Patient 360 dashboard data.');
       }
     } catch (err) {
       console.error('Patient 360 load error:', err);
-      alert('Failed to load patient data. Please check backend connectivity.');
     }
+  };
+
+  const handleOpenPatient360 = async (pId?: string) => {
+    const targetId = pId || selectedPatientId || user?.username || 'john_doe';
+    await handleSelectPatient(targetId);
+    setActiveTab('patient360');
   };
 
   const handleRebuildTwin = async () => {
@@ -536,10 +536,9 @@ export default function App() {
               </button>
               
               <button 
-                onClick={() => setActiveTab('patient360')}
+                onClick={() => handleOpenPatient360()}
                 className={`btn ${activeTab === 'patient360' ? 'btn-primary' : 'btn-secondary'}`}
                 style={{ justifyContent: 'flex-start', width: '100%', background: activeTab === 'patient360' ? '' : 'transparent', border: 'none' }}
-                disabled={!selectedPatientId || !dashboard360}
               >
                 <Cpu size={16} /> Patient 360 View
               </button>
@@ -573,7 +572,7 @@ export default function App() {
               </button>
 
               <button 
-                onClick={() => setActiveTab('patient360')}
+                onClick={() => handleOpenPatient360()}
                 className={`btn ${activeTab === 'patient360' ? 'btn-primary' : 'btn-secondary'}`}
                 style={{ justifyContent: 'flex-start', width: '100%', background: activeTab === 'patient360' ? '' : 'transparent', border: 'none' }}
               >

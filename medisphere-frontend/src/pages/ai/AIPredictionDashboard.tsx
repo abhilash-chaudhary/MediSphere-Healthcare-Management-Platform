@@ -28,12 +28,10 @@ export default function AIPredictionDashboard({ onNavigateToPrediction, onNaviga
   const [heartRate, setHeartRate] = useState('115');
 
   useEffect(() => {
-    const pid = selectedPatientId || patientProfile?.id || '';
-    if (pid) {
-      setPatientId(pid);
-      loadHistory(pid);
-    }
-  }, [selectedPatientId, patientProfile]);
+    const pid = selectedPatientId || patientProfile?.id || user?.username || 'john_doe';
+    setPatientId(pid);
+    loadHistory(pid);
+  }, [selectedPatientId, patientProfile, user]);
 
   const loadHistory = async (pid: string) => {
     setLoading(true);
