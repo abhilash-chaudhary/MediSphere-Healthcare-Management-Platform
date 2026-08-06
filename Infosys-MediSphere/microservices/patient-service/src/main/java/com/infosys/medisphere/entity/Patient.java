@@ -30,4 +30,10 @@ public class Patient {
     private List<String> medicalHistory;
     private String insuranceProvider;
     private String insurancePolicyNumber;
+
+    // Clinical metadata for monitoring dashboard
+    private String primaryCondition;
+    private String aiRisk;       // "High", "Medium", "Low"
+    private Double aiConfidence;
+    private Integer age;
 }

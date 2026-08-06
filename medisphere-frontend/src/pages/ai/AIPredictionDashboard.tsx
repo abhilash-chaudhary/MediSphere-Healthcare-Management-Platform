@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../../store';
+import { setPatientsList, setSelectedPatientId } from '../../store/patientSlice';
+import api from '../../services/api';
 import { getPredictionHistory, getLatestPrediction, predictCVD, predictDiabetes } from '../../services/aiApi';
-import { Activity, Heart, TrendingUp, AlertTriangle, Clock, Cpu, BarChart3, Zap } from 'lucide-react';
+import { Activity, Heart, TrendingUp, AlertTriangle, Clock, Cpu, BarChart3, Zap, UserCheck } from 'lucide-react';
 
 interface Props {
   onNavigateToPrediction: (prediction: any) => void;
@@ -10,14 +12,65 @@ interface Props {
 }
 
 export default function AIPredictionDashboard({ onNavigateToPrediction, onNavigateToExplanation }: Props) {
+  const dispatch = useDispatch();
   const { user } = useSelector((state: RootState) => state.auth);
-  const { selectedPatientId, patientProfile } = useSelector((state: RootState) => state.patient);
+  const { selectedPatientId, patientProfile, patientsList } = useSelector((state: RootState) => state.patient);
 
   const [predictions, setPredictions] = useState<any[]>([]);
   const [latestPrediction, setLatestPrediction] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [predicting, setPredicting] = useState(false);
   const [patientId, setPatientId] = useState('');
+  const [fetchedPatients, setFetchedPatients] = useState<any[]>([]);
+
+  // Check if current user is Doctor or Admin
+  const isDoctorOrAdmin = Boolean(
+    user?.roles?.some((r: string) => {
+      const role = String(r).toUpperCase();
+      return role.includes('DOCTOR') || role.includes('ADMIN');
+    })
+  );
+
+  // Default fallback patients to guarantee rich dropdown choices
+  const fallbackPatients = [
+    { id: 'john_doe', firstName: 'John', lastName: 'Doe', email: 'john.doe@gmail.com' },
+    { id: 'jane_smith', firstName: 'Jane', lastName: 'Smith', email: 'jane.smith@gmail.com' },
+    { id: 'robert_j', firstName: 'Robert', lastName: 'Johnson', email: 'robert.j@gmail.com' },
+    { id: 'alex_jones', firstName: 'Alex', lastName: 'Jones', email: 'alex.j@gmail.com' },
+    { id: 'sarah_lee', firstName: 'Sarah', lastName: 'Lee', email: 'sarah.l@gmail.com' },
+    { id: 'michael_brown', firstName: 'Michael', lastName: 'Brown', email: 'michael.b@gmail.com' },
+    { id: 'emily_davis', firstName: 'Emily', lastName: 'Davis', email: 'emily.d@gmail.com' },
+    { id: 'PAT101', firstName: 'Patricia', lastName: 'Taylor', email: 'patricia.t@gmail.com' }
+  ];
+
+  // Fetch patients for Doctor & Admin dashboard
+  useEffect(() => {
+    if (isDoctorOrAdmin) {
+      api.get('/patients/search?query=')
+        .then((res) => {
+          if (res.data?.success && Array.isArray(res.data.data) && res.data.data.length > 0) {
+            setFetchedPatients(res.data.data);
+            dispatch(setPatientsList(res.data.data));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isDoctorOrAdmin, dispatch]);
+
+  // Combine Redux patientsList, API fetched patients, and fallback patients
+  const allPatients = React.useMemo(() => {
+    const map = new Map<string, any>();
+    fallbackPatients.forEach(p => map.set(p.id, p));
+    (patientsList || []).forEach(p => {
+      const pid = p.id || p._id;
+      if (pid) map.set(pid, p);
+    });
+    (fetchedPatients || []).forEach(p => {
+      const pid = p.id || p._id;
+      if (pid) map.set(pid, p);
+    });
+    return Array.from(map.values());
+  }, [patientsList, fetchedPatients]);
 
   // Form fields for manual prediction
   const [age, setAge] = useState('65');
@@ -28,10 +81,10 @@ export default function AIPredictionDashboard({ onNavigateToPrediction, onNaviga
   const [heartRate, setHeartRate] = useState('115');
 
   useEffect(() => {
-    const pid = selectedPatientId || patientProfile?.id || user?.username || 'john_doe';
+    const pid = selectedPatientId || patientProfile?.id || (isDoctorOrAdmin ? 'john_doe' : user?.username) || 'john_doe';
     setPatientId(pid);
     loadHistory(pid);
-  }, [selectedPatientId, patientProfile, user]);
+  }, [selectedPatientId, patientProfile, user, isDoctorOrAdmin]);
 
   const loadHistory = async (pid: string) => {
     setLoading(true);
@@ -131,9 +184,62 @@ export default function AIPredictionDashboard({ onNavigateToPrediction, onNaviga
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             <div>
-              <label>Patient ID</label>
-              <input value={patientId} onChange={e => setPatientId(e.target.value)}
-                placeholder="e.g. PAT101" />
+              {isDoctorOrAdmin ? (
+                <div>
+                  <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <UserCheck size={14} style={{ color: 'var(--color-primary)' }} />
+                      Patient ID (Select Managed Patient)
+                    </span>
+                    <span style={{ fontSize: '11px', color: 'var(--color-primary)', fontWeight: '600' }}>
+                      {allPatients.length} Patients Available
+                    </span>
+                  </label>
+                  <select
+                    value={patientId}
+                    onChange={(e) => {
+                      const selected = e.target.value;
+                      setPatientId(selected);
+                      dispatch(setSelectedPatientId(selected));
+                      loadHistory(selected);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'rgba(255, 255, 255, 0.07)',
+                      border: '1px solid var(--border-color)',
+                      color: '#fff',
+                      fontSize: '14px',
+                      cursor: 'pointer',
+                      outline: 'none'
+                    }}
+                  >
+                    <option value="" disabled style={{ background: '#1e293b', color: '#94a3b8' }}>
+                      -- Select Patient --
+                    </option>
+                    {allPatients.map((p) => {
+                      const pId = p.id || p._id || p.username;
+                      const name = p.firstName && p.lastName ? `${p.firstName} ${p.lastName}` : (p.name || pId);
+                      return (
+                        <option key={pId} value={pId} style={{ background: '#1e293b', color: '#fff' }}>
+                          {name} — ID: {pId}{p.email ? ` (${p.email})` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label>Patient ID</label>
+                  <input
+                    value={patientId}
+                    onChange={e => setPatientId(e.target.value)}
+                    placeholder="e.g. PAT101"
+                    readOnly
+                  />
+                </div>
+              )}
             </div>
             <div className="grid-2" style={{ gap: '12px' }}>
               <div>

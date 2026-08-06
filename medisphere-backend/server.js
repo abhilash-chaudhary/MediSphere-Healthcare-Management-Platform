@@ -6,6 +6,9 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
 
+const { evaluateRules, classifyRisk, parseBP, SEVERITY } = require('./rules/clinicalRules');
+const { getRoutingConfig, resolveNotificationTargets } = require('./config/alertRouting');
+
 const app = express();
 const PORT = 8080;
 const JWT_SECRET = process.env.JWT_SECRET || 'medisphere-secret-key-12345';
@@ -26,6 +29,7 @@ app.get('/', (req, res) => {
       twin: '/twin/:patientId | /twin/rebuild',
       consent: '/consent/grant | /consent/revoke | /consent/history',
       vitals: '/vitals/send | /vitals/live/:patientId | /vitals/history/:patientId',
+      monitoring: '/monitoring/stats | /monitoring/patients | /monitoring/alerts | /monitoring/risk/:patientId',
       labs: '/labs/:patientId',
       admin: '/admin/system-health | /admin/statistics',
       appointments: '/appointments/patient/:patientId'
@@ -114,6 +118,7 @@ const VitalSchema = new mongoose.Schema({
   bloodPressure: String,
   temperature: Number,
   oxygenLevel: Number,
+  respiratoryRate: { type: Number, default: 16 },
   caloriesBurned: Number,
   sleepMinutes: Number,
   steps: Number,
@@ -162,40 +167,60 @@ const UserOtpSchema = new mongoose.Schema({
   expiresAt: { type: Date, required: true }
 });
 
-const PredictionSchema = new mongoose.Schema({
-  id: String,
-  patientId: String,
-  predictionType: String,
-  riskType: String,
-  riskLevel: String,
-  riskPercentage: Number,
+const AlertSchema = new mongoose.Schema({
+  alertId: { type: String, required: true, unique: true },
+  patientId: { type: String, required: true },
+  patientName: String,
+  severity: { type: String, enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'], required: true },
+  type: { type: String, required: true },
+  message: String,
   confidence: Number,
-  modelVersion: String,
-  predictionDate: String,
-  age: Number,
-  bloodPressure: Number,
-  bmi: Number,
-  hba1c: Number,
-  cholesterol: Number,
-  heartRate: Number,
+  risk: String,
+  vitals: Object,
+  status: { type: String, enum: ['NEW', 'SENT', 'DELIVERED', 'ACKNOWLEDGED', 'CLOSED'], default: 'NEW' },
+  acknowledgedBy: String,
+  acknowledgedAt: Date,
   createdAt: { type: Date, default: Date.now }
 });
 
-const ExplanationSchema = new mongoose.Schema({
+const RiskPredictionSchema = new mongoose.Schema({
   patientId: String,
-  riskLevel: String,
-  baseValue: Number,
-  predictionValue: Number,
-  featureImportances: [mongoose.Schema.Types.Mixed],
-  narrative: String,
-  generatedAt: { type: Date, default: Date.now }
+  risk: String,
+  confidence: Number,
+  score: Number,
+  factors: [String],
+  timestamp: { type: Date, default: Date.now }
 });
 
-const ModelVersionSchema = new mongoose.Schema({
-  version: String,
-  accuracy: Number,
-  status: String,
-  trainedAt: { type: Date, default: Date.now }
+const PatientAssignmentSchema = new mongoose.Schema({
+  patientId: { type: String, required: true },
+  doctorUsername: { type: String, required: true },
+  assignedAt: { type: Date, default: Date.now }
+});
+
+const PredictionResultSchema = new mongoose.Schema({
+  id: { type: String, required: true },
+  patientId: { type: String, required: true },
+  predictionType: { type: String, enum: ['CVD', 'DIABETES', 'CARDIO', 'HYPERTENSION'], required: true },
+  riskType: { type: String },
+  riskLevel: { type: String, enum: ['HIGH', 'MEDIUM', 'LOW'], required: true },
+  riskPercentage: { type: Number, required: true },
+  confidence: { type: Number, required: true },
+  predictionDate: { type: String },
+  contributingFactors: [String],
+  metrics: Object,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const AIModelVersionSchema = new mongoose.Schema({
+  version: { type: String, required: true, unique: true },
+  name: String,
+  type: String,
+  accuracy: { type: Number, required: true },
+  status: { type: String, enum: ['ACTIVE', 'INACTIVE', 'DEPRECATED'], default: 'INACTIVE' },
+  trainedOn: Date,
+  featuresCount: Number,
+  createdAt: { type: Date, default: Date.now }
 });
 
 // Models
@@ -209,22 +234,24 @@ const AuditLog = conns.audit.model('audit_logs', AuditLogSchema);
 const VitalRecord = conns.stream.model('vitals', VitalSchema);
 const NotificationLog = conns.notification.model('notifications', NotificationSchema);
 const UserOtp = conns.auth.model('user_otps', UserOtpSchema);
-const Prediction = conns.twin.model('predictions', PredictionSchema);
-const Explanation = conns.twin.model('explanations', ExplanationSchema);
-const ModelVersion = conns.twin.model('model_versions', ModelVersionSchema);
+const Alert = conns.stream.model('alerts', AlertSchema);
+const RiskPrediction = conns.stream.model('risk_predictions', RiskPredictionSchema);
+const PatientAssignment = conns.patient.model('patient_assignments', PatientAssignmentSchema);
+const PredictionResult = conns.stream.model('prediction_results', PredictionResultSchema);
+const AIModelVersion = conns.stream.model('ai_model_versions', AIModelVersionSchema);
 
-// Initial default models if collection is empty
-(async () => {
-  try {
-    const count = await ModelVersion.countDocuments();
-    if (count === 0) {
-      await ModelVersion.insertMany([
-        { version: 'v1.0.0', accuracy: 91.4, status: 'ACTIVE', trainedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000) },
-        { version: 'v1.1.0-beta', accuracy: 93.8, status: 'INACTIVE', trainedAt: new Date(Date.now() - 5 * 24 * 3600 * 1000) }
-      ]);
+// Active SSE Clients for Real-Time Telemetry & Alert Broadcasts
+let sseClients = [];
+
+function broadcastSSEEvent(eventType, data) {
+  sseClients.forEach(client => {
+    try {
+      client.res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch (e) {
+      console.error('SSE broadcast error:', e.message);
     }
-  } catch (e) {}
-})();
+  });
+}
 
 // DLQ Mock Array in memory
 let dlqPayloads = [
@@ -499,27 +526,20 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid username or password', data: null });
     }
 
-    // Generate random 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 mins
+    // Direct login without OTP verification
+    const token = jwt.sign({ username: user.username, roles: user.roles }, JWT_SECRET, { expiresIn: '86400s' });
+    const refreshToken = jwt.sign({ username: user.username }, JWT_SECRET, { expiresIn: '604800s' });
 
-    // Save in DB (overwrite existing for that username)
-    await UserOtp.deleteOne({ username });
-    await UserOtp.create({ username, otp, expiresAt });
-
-    console.log(`[EMAIL OTP] Generated code ${otp} for user ${username} (triggering email dispatch to ${user.email})`);
-    
-    // Dispatch OTP email asynchronously
-    sendOtpEmail(user.email, otp);
-    
-    await logAudit(username, 'GENERATE_OTP', username, `OTP generated and dispatched to registered email: ${user.email}`, req);
+    await logAudit(username, 'USER_LOGIN', username, 'User logged in successfully', req);
 
     return res.json({
       success: true,
-      message: 'OTP sent to your email address',
+      message: 'Login successful',
       data: {
-        otpRequired: true,
-        email: user.email
+        accessToken: token,
+        refreshToken: refreshToken,
+        tokenType: 'Bearer',
+        expiresIn: 86400
       }
     });
   } catch (err) {
@@ -682,15 +702,33 @@ app.post('/patients', authenticateToken, async (req, res) => {
 app.get('/patients/search', authenticateToken, requireRole('DOCTOR', 'ADMIN'), async (req, res) => {
   const { query } = req.query;
   try {
-    const regex = new RegExp(query, 'i');
-    const list = await Patient.find({
+    const regex = new RegExp(query || '', 'i');
+    let searchFilter = {
       $or: [
         { _id: regex },
         { firstName: regex },
         { lastName: regex },
         { email: regex }
       ]
-    });
+    };
+
+    const isDoctorOnly = (req.user.roles.includes('DOCTOR') || req.user.roles.includes('ROLE_DOCTOR')) &&
+                         !req.user.roles.includes('ADMIN') && !req.user.roles.includes('ROLE_ADMIN');
+
+    if (isDoctorOnly) {
+      const assignments = await PatientAssignment.find({ doctorUsername: req.user.username });
+      let assignedIds = assignments.map(a => a.patientId);
+      if (assignedIds.length === 0) {
+        // Fallback default assigned IDs for standard doctor usernames
+        if (req.user.username === 'dr_smith') assignedIds = ['john_doe', 'jane_smith'];
+        else if (req.user.username === 'dr_johnson' || req.user.username === 'dr_jones') assignedIds = ['robert_j', 'alex_jones'];
+        else if (req.user.username === 'doctor') assignedIds = ['sarah_lee', 'michael_brown'];
+        else assignedIds = ['emily_davis', 'PAT101'];
+      }
+      searchFilter._id = { $in: assignedIds };
+    }
+
+    const list = await Patient.find(searchFilter);
     return res.json({ success: true, message: 'Patient search completed', data: list });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
@@ -1266,48 +1304,548 @@ app.get('/audit/logs', authenticateToken, requireRole('ADMIN'), async (req, res)
 
 
 // ==========================================
-// DASHBOARD SERVICE PATHS (/dashboard/*)
+// MONITORING SERVICE PATHS (/monitoring/*) - MILESTONE 3
 // ==========================================
-app.get(['/dashboard/patient360', '/api/dashboard/patient360'], authenticateToken, async (req, res) => {
-  const patientId = req.query.patientId || 'john_doe';
-  const doctorId = req.query.doctorId || req.user?.username || 'doctor';
-  
+
+function calculateAgeFromDob(dob) {
+  if (!dob) return 45;
+  const birth = new Date(dob);
+  const diff = Date.now() - birth.getTime();
+  const ageDate = new Date(diff);
+  return Math.abs(ageDate.getUTCFullYear() - 1970);
+}
+
+// 1. GET /monitoring/stats
+app.get('/monitoring/stats', authenticateToken, async (req, res) => {
   try {
-    const consent = await Consent.findOne({ patientId, doctorId });
-    const consentCheckResult = consent ? consent.status === 'GRANTED' : true;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    await logAudit(req.user?.username || doctorId, 'QUERY_PATIENT_360', patientId, `Queried 360 patient dashboard. Consent check: ${consentCheckResult ? 'SUCCESS' : 'NO_CONSENT_RECORD'}`, req);
+    const [totalPatients, todayAlerts, criticalAlerts, openAlerts, devicesCount] = await Promise.all([
+      Patient.countDocuments(),
+      Alert.countDocuments({ createdAt: { $gte: today } }),
+      Alert.countDocuments({ severity: 'CRITICAL', createdAt: { $gte: today } }),
+      Alert.countDocuments({ status: { $in: ['NEW', 'SENT', 'DELIVERED'] } }),
+      WearableDevice.countDocuments({ status: 'ACTIVE' })
+    ]);
 
-    let patientProfile = await Patient.findById(patientId);
-    if (!patientProfile) {
-      patientProfile = fallbackPatientProfiles[patientId] || fallbackPatientProfiles.john_doe;
-      if (patientProfile && !patientProfile._id) patientProfile._id = patientId;
+    let assignedPatients = totalPatients;
+    if (req.user.roles.includes('DOCTOR') || req.user.roles.includes('ROLE_DOCTOR')) {
+      const count = await PatientAssignment.countDocuments({ doctorUsername: req.user.username });
+      if (count > 0) assignedPatients = count;
     }
 
-    let digitalTwin = await HealthTwin.findOne({ patientId });
-    if (!digitalTwin) {
-      digitalTwin = fallbackDigitalTwins[patientId] || fallbackDigitalTwins.john_doe;
-    } else {
-      digitalTwin = digitalTwin.toObject ? digitalTwin.toObject() : digitalTwin;
+    return res.json({
+      success: true,
+      message: 'Monitoring stats fetched successfully',
+      data: {
+        patientsOnline: totalPatients,
+        totalPatients,
+        assignedPatients,
+        todayAlerts,
+        criticalAlerts,
+        openAlerts,
+        avgResponseTime: '3.8 min',
+        simulatorStatus: 'ACTIVE'
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 2. GET /monitoring/patients
+app.get('/monitoring/patients', authenticateToken, async (req, res) => {
+  try {
+    let patientQuery = {};
+    const isDoctorOnly = (req.user.roles.includes('DOCTOR') || req.user.roles.includes('ROLE_DOCTOR')) &&
+                         !req.user.roles.includes('ADMIN') && !req.user.roles.includes('ROLE_ADMIN');
+
+    if (isDoctorOnly) {
+      const assignments = await PatientAssignment.find({ doctorUsername: req.user.username });
+      let assignedIds = assignments.map(a => a.patientId);
+      if (assignedIds.length === 0) {
+        if (req.user.username === 'dr_smith') assignedIds = ['john_doe', 'jane_smith'];
+        else if (req.user.username === 'dr_johnson' || req.user.username === 'dr_jones') assignedIds = ['robert_j', 'alex_jones'];
+        else if (req.user.username === 'doctor') assignedIds = ['sarah_lee', 'michael_brown'];
+        else assignedIds = ['emily_davis', 'PAT101'];
+      }
+      patientQuery = { _id: { $in: assignedIds } };
     }
 
-    // Ensure vitalsHistory is non-empty for telemetry charts & 3D body
-    if (!digitalTwin.vitalsHistory || digitalTwin.vitalsHistory.length === 0) {
-      const liveHistory = await VitalRecord.find({ patientId }).sort({ recordedAt: -1 }).limit(10);
-      if (liveHistory && liveHistory.length > 0) {
-        digitalTwin.vitalsHistory = liveHistory.reverse();
+    const patientList = await Patient.find(patientQuery);
+    const result = await Promise.all(patientList.map(async (p) => {
+      const twin = await HealthTwin.findOne({ patientId: p._id });
+      const lastVitalRecord = await VitalRecord.findOne({ patientId: p._id }).sort({ recordedAt: -1 });
+      const latestPrediction = await RiskPrediction.findOne({ patientId: p._id }).sort({ timestamp: -1 });
+      const openAlertsCount = await Alert.countDocuments({ patientId: p._id, status: { $in: ['NEW', 'SENT', 'DELIVERED'] } });
+
+      let vitals = null;
+      if (lastVitalRecord) {
+        vitals = {
+          heartRate: lastVitalRecord.heartRate,
+          spo2: lastVitalRecord.oxygenLevel,
+          temperature: lastVitalRecord.temperature,
+          bloodPressure: lastVitalRecord.bloodPressure || '120/80',
+          respiratoryRate: lastVitalRecord.respiratoryRate || 16,
+          lastUpdated: lastVitalRecord.recordedAt
+        };
+      } else if (twin && twin.vitalsHistory && twin.vitalsHistory.length > 0) {
+        const lv = twin.vitalsHistory[twin.vitalsHistory.length - 1];
+        vitals = {
+          heartRate: lv.heartRate,
+          spo2: lv.oxygenLevel,
+          temperature: lv.temperature,
+          bloodPressure: lv.bloodPressure || '120/80',
+          respiratoryRate: lv.respiratoryRate || 16,
+          lastUpdated: lv.recordedAt
+        };
       } else {
-        digitalTwin.vitalsHistory = [
-          { recordedAt: '10:00 AM', heartRate: 72, oxygenLevel: 98, temperature: 36.6, bloodPressure: '120/80' },
-          { recordedAt: '11:00 AM', heartRate: 75, oxygenLevel: 97, temperature: 36.7, bloodPressure: '122/82' },
-          { recordedAt: '12:00 PM', heartRate: 88, oxygenLevel: 99, temperature: 36.8, bloodPressure: '125/84' },
-          { recordedAt: '01:00 PM', heartRate: 76, oxygenLevel: 98, temperature: 36.6, bloodPressure: '120/80' },
-          { recordedAt: '02:00 PM', heartRate: 80, oxygenLevel: 98, temperature: 36.7, bloodPressure: '121/81' }
-        ];
+        vitals = {
+          heartRate: 72,
+          spo2: 98,
+          temperature: 36.6,
+          bloodPressure: '120/80',
+          respiratoryRate: 16,
+          lastUpdated: new Date()
+        };
+      }
+
+      const age = calculateAgeFromDob(p.dateOfBirth);
+      const aiRisk = latestPrediction ? latestPrediction.risk : (twin ? twin.riskCategory : 'Low');
+      const aiConfidence = latestPrediction ? latestPrediction.confidence : 88.5;
+
+      return {
+        patientId: p._id,
+        patientName: `${p.firstName} ${p.lastName}`,
+        age,
+        gender: p.gender || 'Unknown',
+        status: 'ONLINE',
+        vitals,
+        aiRisk: aiRisk === 'UNKNOWN' ? 'Low' : aiRisk,
+        aiConfidence,
+        openAlerts: openAlertsCount
+      };
+    }));
+
+    return res.json({ success: true, message: 'Monitoring patient population compiled successfully', data: result });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 3. GET /monitoring/alerts
+app.get('/monitoring/alerts', authenticateToken, async (req, res) => {
+  const { limit = 20, severity, status } = req.query;
+  try {
+    let filter = {};
+    if (severity) filter.severity = severity;
+    if (status) filter.status = status;
+
+    const list = await Alert.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+
+    return res.json({ success: true, message: 'Recent monitoring alerts retrieved', data: list });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 4. GET /monitoring/alerts/history
+app.get('/monitoring/alerts/history', authenticateToken, async (req, res) => {
+  const { page = 1, limit = 20, severity, status, patientId, search } = req.query;
+  try {
+    let filter = {};
+    if (severity) filter.severity = severity;
+    if (status) filter.status = status;
+    if (patientId) filter.patientId = patientId;
+    if (search) {
+      const reg = new RegExp(search, 'i');
+      filter.$or = [{ message: reg }, { patientName: reg }, { type: reg }];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [list, total] = await Promise.all([
+      Alert.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      Alert.countDocuments(filter)
+    ]);
+
+    return res.json({
+      success: true,
+      message: 'Alert history retrieved',
+      data: {
+        alerts: list,
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 5. POST /monitoring/alerts/:id/acknowledge
+app.post('/monitoring/alerts/:id/acknowledge', authenticateToken, async (req, res) => {
+  const alertIdParam = req.params.id;
+  try {
+    const alert = await Alert.findOne({ $or: [{ alertId: alertIdParam }, { _id: alertIdParam }] });
+    if (!alert) {
+      return res.status(404).json({ success: false, message: 'Alert not found', data: null });
+    }
+
+    alert.status = 'ACKNOWLEDGED';
+    alert.acknowledgedBy = req.user.username;
+    alert.acknowledgedAt = new Date();
+    await alert.save();
+
+    await logAudit(req.user.username, 'ACKNOWLEDGE_ALERT', alert.alertId, `Acknowledged alert ${alert.alertId} for patient ${alert.patientId}`, req);
+
+    broadcastSSEEvent('alert_updated', alert);
+
+    return res.json({ success: true, message: 'Alert acknowledged successfully', data: alert });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 6. GET /monitoring/risk/:patientId
+app.get('/monitoring/risk/:patientId', authenticateToken, async (req, res) => {
+  const { patientId } = req.params;
+  try {
+    const patient = await Patient.findById(patientId);
+    const twin = await HealthTwin.findOne({ patientId });
+    const lastVital = await VitalRecord.findOne({ patientId }).sort({ recordedAt: -1 });
+
+    const hr = lastVital ? lastVital.heartRate : 75;
+    const spo2 = lastVital ? lastVital.oxygenLevel : 98;
+    const temp = lastVital ? lastVital.temperature : 36.6;
+    const bp = parseBP(lastVital ? lastVital.bloodPressure : '120/80');
+    const rr = lastVital ? (lastVital.respiratoryRate || 16) : 16;
+
+    const riskAnalysis = classifyRisk({
+      heartRate: hr,
+      spo2,
+      temperature: temp,
+      systolic: bp.systolic || 120,
+      diastolic: bp.diastolic || 80,
+      respiratoryRate: rr
+    });
+
+    const prediction = await RiskPrediction.create({
+      patientId,
+      risk: riskAnalysis.risk,
+      confidence: riskAnalysis.confidence,
+      score: riskAnalysis.score,
+      factors: riskAnalysis.factors,
+      timestamp: new Date()
+    });
+
+    return res.json({ success: true, message: 'AI Risk prediction evaluated successfully', data: prediction });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 7. Core Telemetry Ingress & Rule Evaluation: POST /monitoring/vitals
+app.post('/monitoring/vitals', authenticateToken, async (req, res) => {
+  const { patientId, heartRate, spo2, temperature, bloodPressure, respiratoryRate } = req.body;
+  try {
+    const patient = await Patient.findById(patientId);
+    const age = calculateAgeFromDob(patient ? patient.dateOfBirth : null);
+    const patientName = patient ? `${patient.firstName} ${patient.lastName}` : patientId;
+
+    const parsedBp = parseBP(bloodPressure || '120/80');
+    const vitalsInput = {
+      heartRate: Number(heartRate || 75),
+      spo2: Number(spo2 || 98),
+      temperature: Number(temperature || 36.6),
+      systolic: parsedBp.systolic || 120,
+      diastolic: parsedBp.diastolic || 80,
+      respiratoryRate: Number(respiratoryRate || 16)
+    };
+
+    // Save vitals record
+    const vitalRecord = await VitalRecord.create({
+      id: `vit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      patientId,
+      heartRate: vitalsInput.heartRate,
+      oxygenLevel: vitalsInput.spo2,
+      temperature: vitalsInput.temperature,
+      bloodPressure: bloodPressure || '120/80',
+      respiratoryRate: vitalsInput.respiratoryRate,
+      recordedAt: new Date()
+    });
+
+    // Evaluate Clinical Rules
+    const triggeredRules = evaluateRules(vitalsInput, { age, conditions: patient ? patient.medicalHistory : [] });
+    // Classify AI Risk
+    const aiRiskObj = classifyRisk(vitalsInput);
+
+    let generatedAlerts = [];
+    if (triggeredRules.length > 0) {
+      for (const tr of triggeredRules) {
+        const alertId = `ALT-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+        const alertDoc = await Alert.create({
+          alertId,
+          patientId,
+          patientName,
+          severity: tr.severity,
+          type: tr.type,
+          message: tr.message,
+          confidence: aiRiskObj.confidence,
+          risk: aiRiskObj.risk,
+          vitals: vitalsInput,
+          status: 'NEW',
+          createdAt: new Date()
+        });
+        generatedAlerts.push(alertDoc);
+
+        // Create Notification Log
+        await NotificationLog.create({
+          patientId,
+          message: `[${tr.severity}] ${tr.message}`,
+          type: tr.severity,
+          status: 'UNREAD',
+          createdAt: new Date()
+        });
+
+        // Dispatch email notification for CRITICAL severity
+        if (tr.severity === 'CRITICAL' && patient && patient.email) {
+          sendOtpEmail(patient.email, `ALERT: ${tr.message}`).catch(() => {});
+        }
+
+        // SSE Broadcast
+        broadcastSSEEvent('alert', alertDoc);
       }
     }
 
-    const riskLevel = digitalTwin ? (digitalTwin.riskCategory || 'MEDIUM') : 'MEDIUM';
+    // Update Health Twin
+    const twin = await HealthTwin.findOne({ patientId });
+    if (twin) {
+      twin.vitalsHistory.push(vitalRecord);
+      if (twin.vitalsHistory.length > 50) twin.vitalsHistory.shift();
+      twin.riskCategory = aiRiskObj.risk.toUpperCase();
+      twin.lastRebuilt = new Date();
+      await twin.save();
+    }
+
+    // Broadcast live telemetry SSE update
+    broadcastSSEEvent('vitals', {
+      patientId,
+      vitals: {
+        heartRate: vitalsInput.heartRate,
+        spo2: vitalsInput.spo2,
+        temperature: vitalsInput.temperature,
+        bloodPressure: bloodPressure || '120/80',
+        respiratoryRate: vitalsInput.respiratoryRate
+      },
+      aiRisk: aiRiskObj.risk,
+      aiConfidence: aiRiskObj.confidence,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.json({
+      success: true,
+      message: 'Vitals processed successfully',
+      data: {
+        vitals: vitalRecord,
+        aiRisk: aiRiskObj,
+        alerts: generatedAlerts
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 8. POST /monitoring/sos - Emergency SOS Alert Trigger
+app.post('/monitoring/sos', authenticateToken, async (req, res) => {
+  const { patientId, details } = req.body;
+  try {
+    const patient = await Patient.findById(patientId);
+    const patientName = patient ? `${patient.firstName} ${patient.lastName}` : patientId;
+    const alertId = `SOS-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+
+    const alertDoc = await Alert.create({
+      alertId,
+      patientId,
+      patientName,
+      severity: 'CRITICAL',
+      type: 'EMERGENCY_SOS',
+      message: `CRITICAL Emergency SOS Triggered by Patient ${patientName}! ${details || 'Immediate emergency medical team dispatch requested.'}`,
+      confidence: 99.9,
+      risk: 'High',
+      vitals: { heartRate: 135, spo2: 89, temperature: 37.8, bloodPressure: '175/110' },
+      status: 'NEW',
+      createdAt: new Date()
+    });
+
+    await NotificationLog.create({
+      patientId,
+      message: alertDoc.message,
+      type: 'CRITICAL',
+      status: 'UNREAD',
+      createdAt: new Date()
+    });
+
+    // Update Twin risk to HIGH
+    const twin = await HealthTwin.findOne({ patientId });
+    if (twin) {
+      twin.riskCategory = 'HIGH';
+      twin.lastRebuilt = new Date();
+      await twin.save();
+    }
+
+    await logAudit(req.user.username, 'TRIGGER_PATIENT_SOS', patientId, `Triggered emergency panic SOS alert: ${alertId}`, req);
+
+    broadcastSSEEvent('alert', alertDoc);
+
+    return res.json({ success: true, message: 'Emergency SOS dispatched to medical team', data: alertDoc });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 9. POST /monitoring/simulate/critical - Trigger Simulated Critical Vital Anomaly
+app.post('/monitoring/simulate/critical', authenticateToken, async (req, res) => {
+  const { patientId } = req.query;
+  const targetId = patientId || 'john_doe';
+  try {
+    const patient = await Patient.findById(targetId);
+    const patientName = patient ? `${patient.firstName} ${patient.lastName}` : targetId;
+
+    const criticalVitals = {
+      heartRate: 145,
+      spo2: 88,
+      temperature: 39.2,
+      bloodPressure: '185/115',
+      respiratoryRate: 28
+    };
+
+    const alertId = `ALT-SIM-${Date.now()}`;
+    const alertDoc = await Alert.create({
+      alertId,
+      patientId: targetId,
+      patientName,
+      severity: 'CRITICAL',
+      type: 'CARDIAC',
+      message: `Simulated Critical Alert: Possible AFib & Severe Hypoxia (HR: 145 bpm, SpO2: 88%, BP: 185/115 mmHg). Immediate intervention required.`,
+      confidence: 96.4,
+      risk: 'High',
+      vitals: criticalVitals,
+      status: 'NEW',
+      createdAt: new Date()
+    });
+
+    broadcastSSEEvent('alert', alertDoc);
+
+    return res.json({ success: true, message: 'Simulated critical anomaly triggered successfully', data: alertDoc });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// 10. GET /monitoring/stream/:username - SSE Telemetry & Event Stream
+app.get('/monitoring/stream/:username', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  const username = req.params.username;
+  const clientId = `${username}-${Date.now()}`;
+  const clientObj = { id: clientId, username, res };
+  sseClients.push(clientObj);
+
+  res.write(`event: connected\ndata: ${JSON.stringify({ clientId, status: 'CONNECTED', timestamp: new Date().toISOString() })}\n\n`);
+
+  const timer = setInterval(() => {
+    try {
+      res.write(`event: ping\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);
+    } catch {}
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(timer);
+    sseClients = sseClients.filter(c => c.id !== clientId);
+    res.end();
+  });
+});
+
+// 11. Doctor-Patient Assignments Endpoints (/monitoring/assignments/*)
+app.get('/monitoring/assignments', authenticateToken, async (req, res) => {
+  const { doctorUsername } = req.query;
+  try {
+    const list = await PatientAssignment.find({ doctorUsername });
+    const assignedPatientIds = list.map(a => a.patientId);
+    const patients = await Patient.find({ _id: { $in: assignedPatientIds } });
+    return res.json({ success: true, message: 'Doctor assignments fetched', data: patients });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+app.get('/monitoring/assignments/unassigned', authenticateToken, async (req, res) => {
+  try {
+    const allAssignments = await PatientAssignment.find({});
+    const assignedIds = new Set(allAssignments.map(a => a.patientId));
+    const unassigned = await Patient.find({ _id: { $nin: Array.from(assignedIds) } });
+    return res.json({ success: true, message: 'Unassigned patients fetched', data: unassigned });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+app.post('/monitoring/assignments/:patientId', authenticateToken, async (req, res) => {
+  const { patientId } = req.params;
+  const { doctorUsername } = req.body;
+  try {
+    await PatientAssignment.deleteOne({ patientId });
+    const assignment = await PatientAssignment.create({
+      patientId,
+      doctorUsername,
+      assignedAt: new Date()
+    });
+    await logAudit(req.user.username, 'ASSIGN_PATIENT_DOCTOR', patientId, `Assigned patient ${patientId} to doctor ${doctorUsername}`, req);
+    return res.json({ success: true, message: 'Patient assigned successfully', data: assignment });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+app.delete('/monitoring/assignments/:patientId', authenticateToken, async (req, res) => {
+  const { patientId } = req.params;
+  const { doctorUsername } = req.query;
+  try {
+    await PatientAssignment.deleteOne({ patientId, doctorUsername });
+    await logAudit(req.user.username, 'UNASSIGN_PATIENT_DOCTOR', patientId, `Unassigned patient ${patientId} from doctor ${doctorUsername}`, req);
+    return res.json({ success: true, message: 'Patient unassigned successfully', data: null });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+
+// ==========================================
+// DASHBOARD SERVICE PATHS (/dashboard/*)
+// ==========================================
+app.get('/dashboard/patient360', authenticateToken, requireRole('DOCTOR', 'ADMIN'), async (req, res) => {
+  const { patientId, doctorId } = req.query;
+  
+  try {
+    // 1. Check consent (for audit logging only, does not block access)
+    const consent = await Consent.findOne({ patientId, doctorId });
+    const consentCheckResult = consent && consent.status === 'GRANTED';
+
+    await logAudit(doctorId, 'QUERY_PATIENT_360', patientId, `Queried 360 patient dashboard. Consent check: ${consentCheckResult ? 'SUCCESS' : 'NO_CONSENT_RECORD'}`, req);
+
+    // 2. Always load patient and twin data for authorized doctors
+    const patientProfile = await Patient.findById(patientId);
+    const digitalTwin = await HealthTwin.findOne({ patientId });
+
+    const riskLevel = digitalTwin ? digitalTwin.riskCategory : 'UNKNOWN';
     const alertStatus = riskLevel === 'HIGH' ? 'ALERT' : 'NORMAL';
 
     return res.json({
@@ -1319,22 +1857,7 @@ app.get(['/dashboard/patient360', '/api/dashboard/patient360'], authenticateToke
         digitalTwin,
         consentCheckResult,
         healthRiskLevel: riskLevel,
-        alertStatusSummary: alertStatus,
-        labReports: [
-          { test: 'HbA1c Glucose', value: '6.8 %', range: '4.0 - 5.6 %', status: 'Elevated' },
-          { test: 'Total Cholesterol', value: '215 mg/dL', range: '< 200 mg/dL', status: 'Elevated' },
-          { test: 'Systolic Blood Pressure', value: '135 mmHg', range: '< 120 mmHg', status: 'Elevated' },
-          { test: 'SpO2 Oxygen Saturation', value: '98 %', range: '95 - 100 %', status: 'Normal' }
-        ],
-        medicalTimeline: [
-          { date: '2026-07-15', event: '3D Health Twin Rebuild & AI Risk Audit', doctor: 'Dr. Sarah Jenkins' },
-          { date: '2026-06-28', event: 'Comprehensive Cardiology Telemetry Check', doctor: 'Dr. Robert Vance' },
-          { date: '2026-05-10', event: 'Routine EHR FHIR Synchronization', doctor: 'System Sync' }
-        ],
-        activePrescriptions: [
-          { medication: 'Lisinopril', dosage: '10mg', frequency: 'Once Daily', doctorId: 'Dr. Vance' },
-          { medication: 'Metformin', dosage: '500mg', frequency: 'Twice Daily', doctorId: 'Dr. Jenkins' }
-        ]
+        alertStatusSummary: alertStatus
       }
     });
   } catch (err) {
@@ -1663,173 +2186,214 @@ app.delete('/appointments/:id', authenticateToken, async (req, res) => {
 
 
 // ==========================================
-// AI PREDICTION SERVICE PATHS (/api/prediction/*)
+// AI PREDICTION SERVICE PATHS (/api/prediction/*, /api/explanation/*, /api/model/*)
 // ==========================================
 
-// Helper function to calculate CVD risk score
-function calculateCvdRisk(age = 50, bp = 120, bmi = 24, cholesterol = 180, heartRate = 75) {
-  let score = 10;
-  if (age > 60) score += 25; else if (age > 45) score += 15;
-  if (bp > 140) score += 30; else if (bp > 125) score += 15;
-  if (bmi > 30) score += 20; else if (bmi > 25) score += 10;
-  if (cholesterol > 240) score += 25; else if (cholesterol > 200) score += 15;
-  if (heartRate > 100) score += 10;
-  
-  const riskPercentage = Math.min(Math.max(score, 5), 98);
+function calculateCvdRisk(payload) {
+  const age = Number(payload.age || 60);
+  const bp = Number(payload.bloodPressure || 135);
+  const cholesterol = Number(payload.cholesterol || 210);
+  const bmi = Number(payload.bmi || 28);
+  const hr = Number(payload.heartRate || 85);
+
+  let score = 0;
+  const factors = [];
+
+  if (bp > 140) { score += 30; factors.push(`Elevated Systolic Blood Pressure (${bp} mmHg)`); }
+  else if (bp > 130) { score += 15; factors.push(`Prehypertension BP (${bp} mmHg)`); }
+
+  if (cholesterol > 240) { score += 25; factors.push(`High Total Cholesterol (${cholesterol} mg/dL)`); }
+  else if (cholesterol > 200) { score += 12; factors.push(`Borderline Cholesterol (${cholesterol} mg/dL)`); }
+
+  if (age > 65) { score += 20; factors.push(`Advanced Age (${age} yrs)`); }
+  else if (age > 50) { score += 10; factors.push(`Age Risk Factor (${age} yrs)`); }
+
+  if (bmi > 30) { score += 15; factors.push(`Obesity (BMI ${bmi})`); }
+  else if (bmi > 25) { score += 8; factors.push(`Overweight (BMI ${bmi})`); }
+
+  if (hr > 100) { score += 10; factors.push(`Resting Tachycardia (${hr} bpm)`); }
+
+  const percentage = Math.min(Math.max(score, 12), 96);
   let riskLevel = 'LOW';
-  if (riskPercentage >= 65) riskLevel = 'HIGH';
-  else if (riskPercentage >= 35) riskLevel = 'MEDIUM';
-  
-  return { riskPercentage, riskLevel };
+  if (percentage >= 50) riskLevel = 'HIGH';
+  else if (percentage >= 25) riskLevel = 'MEDIUM';
+
+  const confidence = parseFloat((88 + (percentage / 10)).toFixed(1));
+
+  return {
+    riskLevel,
+    riskPercentage: percentage,
+    confidence: Math.min(confidence, 99.2),
+    contributingFactors: factors.length > 0 ? factors : ['All clinical indicators within normal limits']
+  };
 }
 
-// Helper function to calculate Diabetes risk score
-function calculateDiabetesRisk(age = 50, bmi = 24, hba1c = 5.5, bp = 120) {
-  let score = 10;
-  if (hba1c >= 6.5) score += 45; else if (hba1c >= 5.7) score += 25;
-  if (bmi > 30) score += 25; else if (bmi > 25) score += 12;
-  if (age > 50) score += 15;
-  if (bp > 130) score += 10;
+function calculateDiabetesRisk(payload) {
+  const hba1c = Number(payload.hba1c || 6.2);
+  const bmi = Number(payload.bmi || 28);
+  const age = Number(payload.age || 55);
+  const bp = Number(payload.bloodPressure || 130);
 
-  const riskPercentage = Math.min(Math.max(score, 5), 98);
+  let score = 0;
+  const factors = [];
+
+  if (hba1c >= 6.5) { score += 45; factors.push(`Diabetic HbA1c Level (${hba1c}%)`); }
+  else if (hba1c >= 5.7) { score += 25; factors.push(`Prediabetic HbA1c Level (${hba1c}%)`); }
+
+  if (bmi > 30) { score += 25; factors.push(`High Body Mass Index (${bmi})`); }
+  else if (bmi > 25) { score += 12; factors.push(`Elevated BMI (${bmi})`); }
+
+  if (age > 45) { score += 15; factors.push(`Age > 45 yrs (${age})`); }
+  if (bp > 130) { score += 10; factors.push(`Co-occurring Hypertension (${bp} mmHg)`); }
+
+  const percentage = Math.min(Math.max(score, 10), 98);
   let riskLevel = 'LOW';
-  if (riskPercentage >= 65) riskLevel = 'HIGH';
-  else if (riskPercentage >= 35) riskLevel = 'MEDIUM';
+  if (percentage >= 50) riskLevel = 'HIGH';
+  else if (percentage >= 25) riskLevel = 'MEDIUM';
 
-  return { riskPercentage, riskLevel };
+  const confidence = parseFloat((89 + (percentage / 10)).toFixed(1));
+
+  return {
+    riskLevel,
+    riskPercentage: percentage,
+    confidence: Math.min(confidence, 99.5),
+    contributingFactors: factors.length > 0 ? factors : ['Normal glucose tolerance and BMI']
+  };
 }
 
+// 1. POST /api/prediction/cvd
 app.post('/api/prediction/cvd', authenticateToken, async (req, res) => {
+  const { patientId } = req.body;
+  const pid = patientId || req.user.username;
   try {
-    const { patientId, age, bloodPressure, bmi, hba1c, cholesterol, heartRate } = req.body;
-    const pid = patientId || 'PAT101';
-    const { riskPercentage, riskLevel } = calculateCvdRisk(age, bloodPressure, bmi, cholesterol, heartRate);
+    const riskData = calculateCvdRisk(req.body);
+    const id = `PRED-CVD-${Date.now()}`;
+    const dateStr = new Date().toISOString().split('T')[0];
 
-    const prediction = await Prediction.create({
-      id: `pred-${Date.now()}`,
+    const predDoc = await PredictionResult.create({
+      id,
       patientId: pid,
       predictionType: 'CVD',
       riskType: 'CARDIO',
-      riskLevel,
-      riskPercentage,
-      confidence: 92.5,
-      modelVersion: 'v1.0.0',
-      predictionDate: new Date().toISOString().split('T')[0],
-      age: age || 65,
-      bloodPressure: bloodPressure || 145,
-      bmi: bmi || 32,
-      hba1c: hba1c || 7.5,
-      cholesterol: cholesterol || 230,
-      heartRate: heartRate || 115
+      riskLevel: riskData.riskLevel,
+      riskPercentage: riskData.riskPercentage,
+      confidence: riskData.confidence,
+      predictionDate: dateStr,
+      contributingFactors: riskData.contributingFactors,
+      metrics: req.body,
+      createdAt: new Date()
     });
 
-    await logAudit(req.user?.username || 'system', 'AI_CVD_PREDICTION', pid, `CVD Risk Prediction generated: ${riskLevel} (${riskPercentage}%)`, req);
-    return res.json({ success: true, message: 'CVD risk prediction completed successfully', data: prediction });
+    await RiskPrediction.create({
+      patientId: pid,
+      risk: riskData.riskLevel,
+      confidence: riskData.confidence,
+      score: riskData.riskPercentage,
+      factors: riskData.contributingFactors,
+      timestamp: new Date()
+    });
+
+    await logAudit(req.user.username, 'GENERATE_AI_PREDICTION', pid, `Generated CVD Risk Prediction: ${riskData.riskLevel} (${riskData.riskPercentage}%)`, req);
+
+    return res.json({ success: true, message: 'CVD Risk prediction computed successfully', data: predDoc });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+// 2. POST /api/prediction/diabetes
 app.post('/api/prediction/diabetes', authenticateToken, async (req, res) => {
+  const { patientId } = req.body;
+  const pid = patientId || req.user.username;
   try {
-    const { patientId, age, bloodPressure, bmi, hba1c, cholesterol, heartRate } = req.body;
-    const pid = patientId || 'PAT101';
-    const { riskPercentage, riskLevel } = calculateDiabetesRisk(age, bmi, hba1c, bloodPressure);
+    const riskData = calculateDiabetesRisk(req.body);
+    const id = `PRED-DIA-${Date.now()}`;
+    const dateStr = new Date().toISOString().split('T')[0];
 
-    const prediction = await Prediction.create({
-      id: `pred-${Date.now()}`,
+    const predDoc = await PredictionResult.create({
+      id,
       patientId: pid,
       predictionType: 'DIABETES',
-      riskType: 'DIABETES',
-      riskLevel,
-      riskPercentage,
-      confidence: 94.1,
-      modelVersion: 'v1.0.0',
-      predictionDate: new Date().toISOString().split('T')[0],
-      age: age || 65,
-      bloodPressure: bloodPressure || 145,
-      bmi: bmi || 32,
-      hba1c: hba1c || 7.5,
-      cholesterol: cholesterol || 230,
-      heartRate: heartRate || 115
+      riskType: 'METABOLIC',
+      riskLevel: riskData.riskLevel,
+      riskPercentage: riskData.riskPercentage,
+      confidence: riskData.confidence,
+      predictionDate: dateStr,
+      contributingFactors: riskData.contributingFactors,
+      metrics: req.body,
+      createdAt: new Date()
     });
 
-    await logAudit(req.user?.username || 'system', 'AI_DIABETES_PREDICTION', pid, `Diabetes Risk Prediction generated: ${riskLevel} (${riskPercentage}%)`, req);
-    return res.json({ success: true, message: 'Diabetes risk prediction completed successfully', data: prediction });
+    await RiskPrediction.create({
+      patientId: pid,
+      risk: riskData.riskLevel,
+      confidence: riskData.confidence,
+      score: riskData.riskPercentage,
+      factors: riskData.contributingFactors,
+      timestamp: new Date()
+    });
+
+    await logAudit(req.user.username, 'GENERATE_AI_PREDICTION', pid, `Generated Diabetes Risk Prediction: ${riskData.riskLevel} (${riskData.riskPercentage}%)`, req);
+
+    return res.json({ success: true, message: 'Diabetes Risk prediction computed successfully', data: predDoc });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+// 3. GET /api/prediction/history/:patientId
 app.get('/api/prediction/history/:patientId', authenticateToken, async (req, res) => {
   try {
-    const history = await Prediction.find({ patientId: req.params.patientId }).sort({ createdAt: -1 });
-    if (history.length === 0) {
-      // Seed default history item for smooth UI experience
-      const defaultPred = {
-        id: `pred-seed-${req.params.patientId}`,
-        patientId: req.params.patientId,
-        predictionType: 'CVD',
-        riskType: 'CARDIO',
-        riskLevel: 'HIGH',
-        riskPercentage: 78,
-        confidence: 92.5,
-        modelVersion: 'v1.0.0',
-        predictionDate: new Date().toISOString().split('T')[0],
-        age: 65, bloodPressure: 145, bmi: 32, hba1c: 7.5, cholesterol: 230, heartRate: 115
-      };
-      return res.json({ success: true, message: 'Prediction history retrieved successfully', data: [defaultPred] });
-    }
-    return res.json({ success: true, message: 'Prediction history retrieved successfully', data: history });
+    const list = await PredictionResult.find({ patientId: req.params.patientId }).sort({ createdAt: -1 });
+    return res.json({ success: true, message: 'Prediction history retrieved', data: list });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+// 4. GET /api/prediction/latest/:patientId
 app.get('/api/prediction/latest/:patientId', authenticateToken, async (req, res) => {
   try {
-    let latest = await Prediction.findOne({ patientId: req.params.patientId }).sort({ createdAt: -1 });
+    let latest = await PredictionResult.findOne({ patientId: req.params.patientId }).sort({ createdAt: -1 });
     if (!latest) {
       latest = {
-        id: `pred-seed-${req.params.patientId}`,
+        id: `PRED-INIT-${req.params.patientId}`,
         patientId: req.params.patientId,
         predictionType: 'CVD',
         riskType: 'CARDIO',
-        riskLevel: 'HIGH',
-        riskPercentage: 78,
-        confidence: 92.5,
-        modelVersion: 'v1.0.0',
+        riskLevel: 'LOW',
+        riskPercentage: 18.5,
+        confidence: 94.2,
         predictionDate: new Date().toISOString().split('T')[0],
-        age: 65, bloodPressure: 145, bmi: 32, hba1c: 7.5, cholesterol: 230, heartRate: 115
+        contributingFactors: ['Baseline clinical metrics within normal ranges']
       };
     }
-    return res.json({ success: true, message: 'Latest prediction retrieved successfully', data: latest });
+    return res.json({ success: true, message: 'Latest prediction retrieved', data: latest });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+// 5. DELETE /api/prediction/:id
 app.delete('/api/prediction/:id', authenticateToken, async (req, res) => {
   try {
-    await Prediction.deleteOne({ id: req.params.id });
-    return res.json({ success: true, message: 'Prediction deleted successfully', data: null });
+    await PredictionResult.deleteOne({ $or: [{ id: req.params.id }, { _id: req.params.id }] });
+    return res.json({ success: true, message: 'Prediction record deleted successfully', data: null });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+// 6. Model Performance & Validation Metrics
 app.get('/api/prediction/accuracy', authenticateToken, (req, res) => {
   return res.json({
     success: true,
-    message: 'Accuracy metrics retrieved',
     data: {
-      overallAccuracy: 91.4,
-      cvdAccuracy: 89.7,
-      diabetesAccuracy: 93.1,
-      f1Score: 0.88,
-      auc: 0.92,
-      modelVersion: 'v1.0.0',
-      evaluationDate: new Date().toISOString().split('T')[0]
+      overallAccuracy: 92.4,
+      sensitivity: 89.6,
+      specificity: 94.1,
+      f1Score: 0.91,
+      aucRoc: 0.952
     }
   });
 });
@@ -1837,14 +2401,10 @@ app.get('/api/prediction/accuracy', authenticateToken, (req, res) => {
 app.get('/api/prediction/calibration', authenticateToken, (req, res) => {
   return res.json({
     success: true,
-    message: 'Calibration metrics retrieved',
     data: {
-      brierScore: 0.12,
-      expectedCalibrationError: 0.08,
-      calibrationSlope: 1.02,
-      calibrationIntercept: -0.03,
-      hosmerLemeshowP: 0.45,
-      status: 'WELL_CALIBRATED'
+      brierScore: 0.082,
+      expectedCalibrationError: 0.024,
+      status: 'OPTIMALLY_CALIBRATED'
     }
   });
 });
@@ -1852,78 +2412,62 @@ app.get('/api/prediction/calibration', authenticateToken, (req, res) => {
 app.get('/api/prediction/bias-audit', authenticateToken, (req, res) => {
   return res.json({
     success: true,
-    message: 'Bias audit results retrieved',
     data: {
-      demographicParity: 0.95,
-      equalizedOdds: 0.93,
-      disparateImpact: 0.97,
-      genderBias: 'LOW',
-      ageBias: 'NEGLIGIBLE',
-      overallFairness: 'PASS',
-      auditDate: new Date().toISOString().split('T')[0]
+      genderParityRatio: 0.98,
+      ageGroupFairnessScore: 0.96,
+      disparateImpactStatus: 'PASS'
     }
   });
 });
 
-
 // ==========================================
-// AI EXPLAINABILITY SERVICE PATHS (/api/explanation/*)
+// EXPLAINABILITY SERVICE PATHS (/api/explanation/*)
 // ==========================================
-
-function buildShapFactors(bp = 145, hba1c = 7.5, chol = 230, age = 65, bmi = 32, hr = 115) {
-  return [
-    { factor: 'Blood Pressure', value: `${bp} mmHg`, impact: bp > 130 ? 'High' : 'Normal', contribution: Math.min(Math.round((bp - 120) * 0.4), 25), direction: bp > 120 ? 'INCREASES_RISK' : 'DECREASES_RISK' },
-    { factor: 'HbA1c', value: `${hba1c}%`, impact: hba1c > 6.0 ? 'Elevated' : 'Normal', contribution: Math.min(Math.round((hba1c - 5.5) * 8), 20), direction: hba1c > 5.7 ? 'INCREASES_RISK' : 'DECREASES_RISK' },
-    { factor: 'Cholesterol', value: `${chol} mg/dL`, impact: chol > 200 ? 'Elevated' : 'Normal', contribution: Math.min(Math.round((chol - 180) * 0.15), 18), direction: chol > 200 ? 'INCREASES_RISK' : 'DECREASES_RISK' },
-    { factor: 'Age', value: `${age} yrs`, impact: age > 50 ? 'Risk Factor' : 'Low', contribution: Math.min(Math.round((age - 40) * 0.3), 15), direction: age > 45 ? 'INCREASES_RISK' : 'DECREASES_RISK' },
-    { factor: 'BMI', value: `${bmi}`, impact: bmi > 28 ? 'Overweight' : 'Normal', contribution: Math.min(Math.round((bmi - 24) * 0.8), 12), direction: bmi > 25 ? 'INCREASES_RISK' : 'DECREASES_RISK' },
-    { factor: 'Heart Rate', value: `${hr} bpm`, impact: hr > 100 ? 'Elevated' : 'Normal', contribution: Math.min(Math.round((hr - 75) * 0.15), 10), direction: hr > 90 ? 'INCREASES_RISK' : 'DECREASES_RISK' }
-  ];
-}
-
-app.post('/api/explanation/:patientId', authenticateToken, async (req, res) => {
+app.get('/api/explanation/:patientId', authenticateToken, async (req, res) => {
   const { patientId } = req.params;
-  const { age, bloodPressure, bmi, hba1c, cholesterol, heartRate, riskLevel } = req.body;
   try {
-    const factors = buildShapFactors(bloodPressure, hba1c, cholesterol, age, bmi, heartRate);
-    const explanationData = {
+    const latest = await PredictionResult.findOne({ patientId }).sort({ createdAt: -1 });
+    const shapData = {
       patientId,
-      riskLevel: riskLevel || 'HIGH',
-      baseValue: 15.0,
-      predictionValue: 78.0,
-      featureImportances: factors,
-      topFactors: factors,
-      narrative: `SHAP feature attribution analysis indicates Systolic Blood Pressure (${bloodPressure || 145} mmHg) and HbA1c (${hba1c || 7.5}%) are the top risk drivers for patient ${patientId}.`,
-      generatedAt: new Date()
+      riskLevel: latest ? latest.riskLevel : 'MEDIUM',
+      baseValue: 0.18,
+      predictionValue: latest ? (latest.riskPercentage / 100) : 0.45,
+      features: [
+        { name: 'Blood Pressure', value: '145 mmHg', shapValue: 0.28, direction: 'INCREASE' },
+        { name: 'HbA1c', value: '7.5%', shapValue: 0.22, direction: 'INCREASE' },
+        { name: 'Age', value: '65 yrs', shapValue: 0.15, direction: 'INCREASE' },
+        { name: 'Cholesterol', value: '230 mg/dL', shapValue: 0.12, direction: 'INCREASE' },
+        { name: 'BMI', value: '32.0', shapValue: 0.08, direction: 'INCREASE' },
+        { name: 'Physical Activity', value: 'Regular', shapValue: -0.09, direction: 'DECREASE' },
+        { name: 'Non-Smoker Status', value: 'Yes', shapValue: -0.14, direction: 'DECREASE' }
+      ],
+      summary: `Primary risk drivers for patient ${patientId} are elevated Systolic BP and HbA1c.`
     };
-
-    await Explanation.findOneAndUpdate({ patientId }, explanationData, { upsert: true, new: true });
-    await logAudit(req.user?.username || 'system', 'AI_SHAP_EXPLANATION', patientId, 'Generated SHAP explainability feature matrix', req);
-
-    return res.json({ success: true, message: 'Explanation generated successfully', data: explanationData });
+    return res.json({ success: true, message: 'SHAP explanation retrieved', data: shapData });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
-app.get('/api/explanation/:patientId', authenticateToken, async (req, res) => {
+app.post('/api/explanation/:patientId', authenticateToken, async (req, res) => {
   const { patientId } = req.params;
+  const data = req.body;
   try {
-    let explanation = await Explanation.findOne({ patientId });
-    if (!explanation) {
-      const factors = buildShapFactors(145, 7.5, 230, 65, 32, 115);
-      explanation = {
-        patientId,
-        riskLevel: 'HIGH',
-        baseValue: 15.0,
-        predictionValue: 78.0,
-        featureImportances: factors,
-        topFactors: factors,
-        narrative: `SHAP feature attribution analysis indicates Systolic Blood Pressure (145 mmHg) and HbA1c (7.5%) are the top risk drivers for patient ${patientId}.`,
-        generatedAt: new Date()
-      };
-    }
-    return res.json({ success: true, message: 'Explanation retrieved successfully', data: explanation });
+    const shapData = {
+      patientId,
+      riskLevel: data.riskLevel || 'MEDIUM',
+      baseValue: 0.18,
+      predictionValue: 0.52,
+      features: [
+        { name: 'Blood Pressure', value: `${data.bloodPressure || 145} mmHg`, shapValue: 0.26, direction: 'INCREASE' },
+        { name: 'HbA1c', value: `${data.hba1c || 7.5}%`, shapValue: 0.24, direction: 'INCREASE' },
+        { name: 'Age', value: `${data.age || 65} yrs`, shapValue: 0.16, direction: 'INCREASE' },
+        { name: 'Cholesterol', value: `${data.cholesterol || 230} mg/dL`, shapValue: 0.11, direction: 'INCREASE' },
+        { name: 'BMI', value: `${data.bmi || 32}`, shapValue: 0.09, direction: 'INCREASE' }
+      ],
+      summary: `Model explanation generated based on feature importance vector.`
+    };
+    return res.json({ success: true, message: 'SHAP explanation generated', data: shapData });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
@@ -1932,49 +2476,27 @@ app.get('/api/explanation/:patientId', authenticateToken, async (req, res) => {
 app.get('/api/explanation/validate', authenticateToken, (req, res) => {
   return res.json({
     success: true,
-    message: 'Explainability engine validation complete',
     data: {
-      engineStatus: 'ACTIVE',
-      shapVersion: '0.42.1',
-      supportedMethods: ['TreeSHAP', 'KernelSHAP', 'RuleBased'],
-      activeMethod: 'RuleBased',
-      factorsCovered: 6,
-      lastValidation: new Date().toISOString()
+      fidelityScore: 0.94,
+      consistencyRate: '98.2%',
+      status: 'VALIDATED'
     }
   });
 });
 
-
 // ==========================================
-// AI MODEL MANAGEMENT SERVICE PATHS (/api/model/*)
+// MODEL MANAGEMENT PATHS (/api/model/*)
 // ==========================================
-
-app.post('/api/model', authenticateToken, async (req, res) => {
-  try {
-    const { version, accuracy, status } = req.body;
-    const model = await ModelVersion.create({
-      version,
-      accuracy: accuracy || 90.0,
-      status: status || 'INACTIVE',
-      trainedAt: new Date()
-    });
-    await logAudit(req.user?.username || 'system', 'CREATE_MODEL_VERSION', version, `Registered AI model version ${version}`, req);
-    return res.json({ success: true, message: 'Model version registered successfully', data: model });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message, data: null });
-  }
-});
-
 app.get('/api/model', authenticateToken, async (req, res) => {
   try {
-    let models = await ModelVersion.find().sort({ trainedAt: -1 });
-    if (models.length === 0) {
-      models = [
-        { version: 'v1.0.0', accuracy: 91.4, status: 'ACTIVE', trainedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000) },
-        { version: 'v1.1.0-beta', accuracy: 93.8, status: 'INACTIVE', trainedAt: new Date(Date.now() - 5 * 24 * 3600 * 1000) }
+    let list = await AIModelVersion.find({}).sort({ createdAt: -1 });
+    if (list.length === 0) {
+      list = [
+        await AIModelVersion.create({ version: 'v2.1-xgboost', name: 'CardioRisk XGBoost Classifier', type: 'XGBoost', accuracy: 94.2, status: 'ACTIVE', trainedOn: new Date(), featuresCount: 18 }),
+        await AIModelVersion.create({ version: 'v1.8-rf', name: 'Diabetes Risk Random Forest', type: 'RandomForest', accuracy: 91.6, status: 'INACTIVE', trainedOn: new Date(Date.now() - 30 * 86400000), featuresCount: 14 })
       ];
     }
-    return res.json({ success: true, message: 'All model versions retrieved', data: models });
+    return res.json({ success: true, message: 'Models list retrieved', data: list });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
@@ -1982,31 +2504,45 @@ app.get('/api/model', authenticateToken, async (req, res) => {
 
 app.get('/api/model/latest', authenticateToken, async (req, res) => {
   try {
-    let active = await ModelVersion.findOne({ status: 'ACTIVE' });
-    if (!active) {
-      active = { version: 'v1.0.0', accuracy: 91.4, status: 'ACTIVE', trainedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000) };
+    let model = await AIModelVersion.findOne({ status: 'ACTIVE' });
+    if (!model) {
+      model = await AIModelVersion.findOne({}).sort({ createdAt: -1 });
     }
-    return res.json({ success: true, message: 'Latest active model retrieved', data: active });
+    return res.json({ success: true, message: 'Latest active model retrieved', data: model });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+app.get('/api/model/status', authenticateToken, (req, res) => {
+  return res.json({
+    success: true,
+    data: {
+      activeVersion: 'v2.1-xgboost',
+      status: 'READY',
+      latency: '14ms',
+      throughput: '450 req/sec'
+    }
+  });
+});
+
+app.post('/api/model', authenticateToken, async (req, res) => {
+  try {
+    const model = await AIModelVersion.create(req.body);
+    return res.json({ success: true, message: 'Model version registered', data: model });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
 app.put('/api/model/:version', authenticateToken, async (req, res) => {
-  const { version } = req.params;
-  const { status, accuracy } = req.body;
   try {
-    if (status === 'ACTIVE') {
-      // Deactivate all other models first
-      await ModelVersion.updateMany({}, { status: 'INACTIVE' });
+    const { version } = req.params;
+    if (req.body.status === 'ACTIVE') {
+      await AIModelVersion.updateMany({ version: { $ne: version } }, { status: 'INACTIVE' });
     }
-    const updated = await ModelVersion.findOneAndUpdate(
-      { version },
-      { ...(status && { status }), ...(accuracy && { accuracy }) },
-      { new: true, upsert: true }
-    );
-    await logAudit(req.user?.username || 'system', 'UPDATE_MODEL_VERSION', version, `Updated AI model version ${version} status to ${status}`, req);
-    return res.json({ success: true, message: 'Model version updated successfully', data: updated });
+    const updated = await AIModelVersion.findOneAndUpdate({ version }, req.body, { new: true });
+    return res.json({ success: true, message: 'Model status updated', data: updated });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
@@ -2014,37 +2550,286 @@ app.put('/api/model/:version', authenticateToken, async (req, res) => {
 
 app.delete('/api/model/:version', authenticateToken, async (req, res) => {
   try {
-    await ModelVersion.deleteOne({ version: req.params.version });
-    await logAudit(req.user?.username || 'system', 'DELETE_MODEL_VERSION', req.params.version, `Deleted AI model version ${req.params.version}`, req);
-    return res.json({ success: true, message: 'Model version deleted successfully', data: null });
+    await AIModelVersion.deleteOne({ version: req.params.version });
+    return res.json({ success: true, message: 'Model version deleted', data: null });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
-app.get('/api/model/status', authenticateToken, async (req, res) => {
+// Notifications specific endpoints
+app.get('/notifications/patient/:patientId', authenticateToken, async (req, res) => {
+  const { patientId } = req.params;
   try {
-    const models = await ModelVersion.find();
-    const active = models.find(m => m.status === 'ACTIVE') || models[0];
-    return res.json({
-      success: true,
-      message: 'Model management status retrieved',
-      data: {
-        totalModels: models.length || 2,
-        activeModel: active ? active.version : 'v1.0.0',
-        activeModelAccuracy: active ? active.accuracy : 91.4,
-        pipelineStatus: 'HEALTHY',
-        lastTrainingDate: '2026-07-12',
-        nextScheduledTraining: '2026-08-01',
-        infrastructure: 'MediSphere AI Prediction Pipeline v1.0'
-      }
-    });
+    let list = await NotificationLog.find({ patientId }).sort({ createdAt: -1 });
+    if (list.length === 0) {
+      list = await NotificationLog.create([
+        { patientId, message: 'Continuous vitals telemetry monitoring active', type: 'INFO', status: 'UNREAD', createdAt: new Date() },
+        { patientId, message: 'Digital Health Twin updated with latest diagnostic metrics', type: 'SYSTEM', status: 'UNREAD', createdAt: new Date(Date.now() - 3600000) },
+        { patientId, message: 'Upcoming Consultation with Dr. John Smith', type: 'APPOINTMENT', status: 'UNREAD', createdAt: new Date(Date.now() - 7200000) }
+      ]);
+    }
+    return res.json({ success: true, message: 'Patient notifications retrieved', data: list });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message, data: null });
   }
 });
 
+app.get('/notifications/doctor/:doctorId', authenticateToken, async (req, res) => {
+  try {
+    let list = await NotificationLog.find({}).sort({ createdAt: -1 }).limit(30);
+    if (list.length === 0) {
+      list = await NotificationLog.create([
+        { patientId: 'john_doe', message: '[CRITICAL] Possible AFib detected for John Doe: HR 145 bpm', type: 'CRITICAL', status: 'UNREAD', createdAt: new Date() },
+        { patientId: 'jane_smith', message: '[CRITICAL] Critical Oxygen Alert: SpO2 at 88% for Jane Smith', type: 'CRITICAL', status: 'UNREAD', createdAt: new Date(Date.now() - 900000) },
+        { patientId: 'robert_j', message: '[HIGH] Hypertension Crisis: Systolic BP at 185 mmHg for Robert Johnson', type: 'HIGH', status: 'UNREAD', createdAt: new Date(Date.now() - 1800000) }
+      ]);
+    }
+    return res.json({ success: true, message: 'Doctor notifications retrieved', data: list });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
 
-app.listen(PORT, () => {
+app.post('/notifications/doctor/:doctorId/read', authenticateToken, async (req, res) => {
+  try {
+    await NotificationLog.updateMany({ status: 'UNREAD' }, { status: 'READ' });
+    return res.json({ success: true, message: 'All doctor notifications marked as read', data: null });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+app.post('/notifications/:id/read', authenticateToken, async (req, res) => {
+  try {
+    await NotificationLog.findByIdAndUpdate(req.params.id, { status: 'READ' });
+    return res.json({ success: true, message: 'Notification marked as read', data: null });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// Provider alias endpoint (/providers)
+app.get('/providers', authenticateToken, async (req, res) => {
+  try {
+    const list = await Provider.find({});
+    return res.json({ success: true, message: 'Providers retrieved', data: list });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message, data: null });
+  }
+});
+
+// ==========================================
+// AUTOMATIC DATABASE SEEDER & CONTINUOUS TELEMETRY GENERATOR
+// ==========================================
+async function seedDatabaseIfEmpty() {
+  try {
+    const patientCount = await Patient.countDocuments();
+    if (patientCount === 0) {
+      console.log('[AUTO-SEEDER] MongoDB is empty. Seeding initial patient population, doctors, alerts, twins, predictions, and assignments...');
+
+      // 1. Seed Patients
+      const patientsData = [
+        { _id: 'john_doe', firstName: 'John', lastName: 'Doe', email: 'john.doe@gmail.com', phoneNumber: '+1-555-0199', dateOfBirth: '1961-05-15', gender: 'Male', address: '123 Pine St, Seattle, WA', emergencyContactName: 'Mary Doe', emergencyContactPhone: '+1-555-0198', medicalHistory: ['Hypertension', 'Type 2 Diabetes'], insuranceProvider: 'Aetna Health', insurancePolicyNumber: 'AE-992384-01' },
+        { _id: 'jane_smith', firstName: 'Jane', lastName: 'Smith', email: 'jane.smith@gmail.com', phoneNumber: '+1-555-0210', dateOfBirth: '1974-08-22', gender: 'Female', address: '456 Oak Ave, Portland, OR', emergencyContactName: 'Tom Smith', emergencyContactPhone: '+1-555-0211', medicalHistory: ['Asthma', 'Seasonal Allergies'], insuranceProvider: 'Blue Cross', insurancePolicyNumber: 'BC-883210-02' },
+        { _id: 'robert_j', firstName: 'Robert', lastName: 'Johnson', email: 'robert.j@gmail.com', phoneNumber: '+1-555-0344', dateOfBirth: '1956-11-10', gender: 'Male', address: '789 Maple Rd, San Jose, CA', emergencyContactName: 'Sarah Johnson', emergencyContactPhone: '+1-555-0345', medicalHistory: ['Coronary Artery Disease', 'Hypertension'], insuranceProvider: 'UnitedHealth', insurancePolicyNumber: 'UH-774120-03' },
+        { _id: 'alex_jones', firstName: 'Alex', lastName: 'Jones', email: 'alex.j@gmail.com', phoneNumber: '+1-555-0455', dateOfBirth: '1981-03-30', gender: 'Male', address: '321 Elm St, Austin, TX', emergencyContactName: 'Lisa Jones', emergencyContactPhone: '+1-555-0456', medicalHistory: ['Prehypertension'], insuranceProvider: 'Cigna', insurancePolicyNumber: 'CG-663219-04' },
+        { _id: 'sarah_lee', firstName: 'Sarah', lastName: 'Lee', email: 'sarah.l@gmail.com', phoneNumber: '+1-555-0566', dateOfBirth: '1988-09-14', gender: 'Female', address: '654 Birch Ct, Denver, CO', emergencyContactName: 'David Lee', emergencyContactPhone: '+1-555-0567', medicalHistory: ['Normal Vitals'], insuranceProvider: 'Kaiser', insurancePolicyNumber: 'KP-551928-05' },
+        { _id: 'michael_brown', firstName: 'Michael', lastName: 'Brown', email: 'michael.b@gmail.com', phoneNumber: '+1-555-0677', dateOfBirth: '1966-02-05', gender: 'Male', address: '987 Cedar Way, Phoenix, AZ', emergencyContactName: 'Laura Brown', emergencyContactPhone: '+1-555-0678', medicalHistory: ['Type 2 Diabetes'], insuranceProvider: 'Humana', insurancePolicyNumber: 'HU-449102-06' },
+        { _id: 'emily_davis', firstName: 'Emily', lastName: 'Davis', email: 'emily.d@gmail.com', phoneNumber: '+1-555-0788', dateOfBirth: '1978-07-19', gender: 'Female', address: '147 Walnut Dr, Miami, FL', emergencyContactName: 'James Davis', emergencyContactPhone: '+1-555-0789', medicalHistory: ['Hypothyroidism'], insuranceProvider: 'Molina', insurancePolicyNumber: 'MO-338291-07' },
+        { _id: 'PAT101', firstName: 'Patricia', lastName: 'Taylor', email: 'patricia.t@gmail.com', phoneNumber: '+1-555-0899', dateOfBirth: '1958-12-01', gender: 'Female', address: '258 Spruce Ln, Chicago, IL', emergencyContactName: 'Mark Taylor', emergencyContactPhone: '+1-555-0900', medicalHistory: ['Congestive Heart Failure', 'Hypertension'], insuranceProvider: 'Medicare', insurancePolicyNumber: 'MC-110099-08' }
+      ];
+      await Patient.insertMany(patientsData);
+
+      // 2. Seed Providers
+      const providersData = [
+        { _id: 'dr_smith', name: 'Dr. John Smith', type: 'DOCTOR', specialty: 'Cardiology', department: 'Cardiovascular Care', schedule: ['Mon 9-5', 'Wed 9-5'], location: 'Clinic Suite 101', email: 'dr.smith@medisphere.com', phone: '+1-555-9001' },
+        { _id: 'dr_jones', name: 'Dr. Emily Jones', type: 'DOCTOR', specialty: 'Endocrinology', department: 'Metabolic Health', schedule: ['Tue 9-5', 'Thu 9-5'], location: 'Clinic Suite 204', email: 'dr.jones@medisphere.com', phone: '+1-555-9002' },
+        { _id: 'dr_williams', name: 'Dr. Robert Williams', type: 'DOCTOR', specialty: 'Pulmonology', department: 'Respiratory Medicine', schedule: ['Mon-Fri 8-4'], location: 'Clinic Suite 305', email: 'dr.williams@medisphere.com', phone: '+1-555-9003' }
+      ];
+      await Provider.insertMany(providersData);
+
+      // 3. Seed Accounts
+      const passHash = await bcrypt.hash('password123', 10);
+      const usersData = [
+        { username: 'john_doe', password: passHash, email: 'john.doe@gmail.com', roles: ['PATIENT'] },
+        { username: 'jane_smith', password: passHash, email: 'jane.smith@gmail.com', roles: ['PATIENT'] },
+        { username: 'robert_j', password: passHash, email: 'robert.j@gmail.com', roles: ['PATIENT'] },
+        { username: 'alex_jones', password: passHash, email: 'alex.j@gmail.com', roles: ['PATIENT'] },
+        { username: 'sarah_lee', password: passHash, email: 'sarah.l@gmail.com', roles: ['PATIENT'] },
+        { username: 'PAT101', password: passHash, email: 'patricia.t@gmail.com', roles: ['PATIENT'] },
+        { username: 'dr_smith', password: passHash, email: 'dr.smith@medisphere.com', roles: ['DOCTOR'] },
+        { username: 'dr_jones', password: passHash, email: 'dr.jones@medisphere.com', roles: ['DOCTOR'] },
+        { username: 'admin', password: passHash, email: 'admin@medisphere.com', roles: ['ADMIN'] }
+      ];
+      for (const u of usersData) {
+        await User.updateOne({ username: u.username }, { $setOnInsert: u }, { upsert: true });
+      }
+
+      // 4. Seed Health Twins
+      for (const p of patientsData) {
+        const hr = 70 + Math.floor(Math.random() * 30);
+        const spo2 = 94 + Math.floor(Math.random() * 5);
+        await HealthTwin.create({
+          patientId: p._id,
+          completenessScore: 88,
+          vitalsHistory: [
+            { id: `v1-${p._id}`, patientId: p._id, heartRate: hr, bloodPressure: '135/85', temperature: 36.8, oxygenLevel: spo2, respiratoryRate: 16, recordedAt: new Date() }
+          ],
+          activeMedications: p.medicalHistory.includes('Hypertension') ? ['Lisinopril 10mg', 'Atorvastatin 20mg'] : ['Multivitamin'],
+          activeConditions: p.medicalHistory,
+          riskCategory: p.medicalHistory.includes('Hypertension') || p.medicalHistory.includes('Type 2 Diabetes') ? 'HIGH' : 'LOW',
+          lastRebuilt: new Date()
+        });
+      }
+
+      // 5. Seed Wearable Devices
+      await WearableDevice.insertMany([
+        { patientId: 'john_doe', deviceId: 'DEV-APPLE-991', deviceName: 'Apple Watch Series 9', deviceType: 'SMARTWATCH', status: 'ACTIVE', lastSyncedAt: new Date() },
+        { patientId: 'jane_smith', deviceId: 'DEV-FITBIT-882', deviceName: 'Fitbit Sense 2', deviceType: 'FITNESS_BAND', status: 'ACTIVE', lastSyncedAt: new Date() },
+        { patientId: 'robert_j', deviceId: 'DEV-GARMIN-773', deviceName: 'Garmin Venu 3', deviceType: 'SMARTWATCH', status: 'ACTIVE', lastSyncedAt: new Date() },
+        { patientId: 'PAT101', deviceId: 'DEV-SAMSUNG-664', deviceName: 'Samsung Galaxy Watch 6', deviceType: 'SMARTWATCH', status: 'ACTIVE', lastSyncedAt: new Date() }
+      ]);
+
+      // 6. Seed Doctor-Patient Assignments
+      await PatientAssignment.insertMany([
+        { patientId: 'john_doe', doctorUsername: 'dr_smith' },
+        { patientId: 'jane_smith', doctorUsername: 'dr_smith' },
+        { patientId: 'robert_j', doctorUsername: 'dr_smith' },
+        { patientId: 'PAT101', doctorUsername: 'dr_smith' },
+        { patientId: 'alex_jones', doctorUsername: 'dr_jones' },
+        { patientId: 'sarah_lee', doctorUsername: 'dr_jones' },
+        { patientId: 'michael_brown', doctorUsername: 'dr_jones' },
+        { patientId: 'emily_davis', doctorUsername: 'dr_jones' },
+        { patientId: 'john_doe', doctorUsername: 'admin' },
+        { patientId: 'jane_smith', doctorUsername: 'admin' },
+        { patientId: 'robert_j', doctorUsername: 'admin' },
+        { patientId: 'PAT101', doctorUsername: 'admin' }
+      ]);
+
+      // 7. Seed Alerts
+      await Alert.insertMany([
+        { alertId: 'ALT-1001', patientId: 'john_doe', patientName: 'John Doe', severity: 'CRITICAL', type: 'CARDIAC', message: 'Possible AFib: Heart rate 145 bpm in patient aged 65. Immediate cardiology review required.', confidence: 94.2, risk: 'High', vitals: { heartRate: 145, spo2: 95, temperature: 36.8, bloodPressure: '145/95', respiratoryRate: 18 }, status: 'NEW', createdAt: new Date() },
+        { alertId: 'ALT-1002', patientId: 'jane_smith', patientName: 'Jane Smith', severity: 'CRITICAL', type: 'RESPIRATORY', message: 'Critical Oxygen Alert: SpO2 at 88% — hypoxia risk. Immediate oxygen therapy required.', confidence: 96.5, risk: 'High', vitals: { heartRate: 92, spo2: 88, temperature: 37.1, bloodPressure: '128/82', respiratoryRate: 24 }, status: 'NEW', createdAt: new Date(Date.now() - 900000) },
+        { alertId: 'ALT-1003', patientId: 'robert_j', patientName: 'Robert Johnson', severity: 'HIGH', type: 'HYPERTENSION', message: 'Hypertension Crisis: Systolic BP at 185 mmHg — hypertensive emergency.', confidence: 91.8, risk: 'High', vitals: { heartRate: 98, spo2: 96, temperature: 36.9, bloodPressure: '185/115', respiratoryRate: 16 }, status: 'SENT', createdAt: new Date(Date.now() - 1800000) },
+        { alertId: 'ALT-1004', patientId: 'PAT101', patientName: 'Patricia Taylor', severity: 'CRITICAL', type: 'EMERGENCY_SOS', message: 'CRITICAL Emergency SOS Triggered by Patient Patricia Taylor! Immediate emergency medical dispatch requested.', confidence: 99.9, risk: 'High', vitals: { heartRate: 135, spo2: 89, temperature: 37.5, bloodPressure: '175/110', respiratoryRate: 26 }, status: 'NEW', createdAt: new Date(Date.now() - 300000) },
+        { alertId: 'ALT-1005', patientId: 'alex_jones', patientName: 'Alex Jones', severity: 'MEDIUM', type: 'CARDIAC', message: 'Elevated Heart Rate: 112 bpm — monitor closely.', confidence: 82.4, risk: 'Medium', vitals: { heartRate: 112, spo2: 97, temperature: 36.7, bloodPressure: '138/88', respiratoryRate: 18 }, status: 'ACKNOWLEDGED', acknowledgedBy: 'dr_jones', acknowledgedAt: new Date(Date.now() - 3600000), createdAt: new Date(Date.now() - 4000000) }
+      ]);
+
+      // 8. Seed Notifications
+      await NotificationLog.insertMany([
+        { patientId: 'john_doe', message: '[CRITICAL] Possible AFib detected for John Doe: HR 145 bpm', type: 'CRITICAL', status: 'UNREAD', createdAt: new Date() },
+        { patientId: 'jane_smith', message: '[CRITICAL] Critical Oxygen Alert: SpO2 at 88%', type: 'CRITICAL', status: 'UNREAD', createdAt: new Date(Date.now() - 900000) },
+        { patientId: 'robert_j', message: '[HIGH] Hypertension Crisis: Systolic BP at 185 mmHg', type: 'HIGH', status: 'UNREAD', createdAt: new Date(Date.now() - 1800000) },
+        { patientId: 'PAT101', message: '[CRITICAL] Emergency SOS Triggered by Patricia Taylor', type: 'CRITICAL', status: 'UNREAD', createdAt: new Date(Date.now() - 300000) },
+        { patientId: 'john_doe', message: 'Continuous vitals telemetry stream connected via Apple Watch', type: 'INFO', status: 'READ', createdAt: new Date(Date.now() - 7200000) }
+      ]);
+
+      // 9. Seed AI Predictions
+      await PredictionResult.insertMany([
+        { id: 'PRED-CVD-101', patientId: 'john_doe', predictionType: 'CVD', riskType: 'CARDIO', riskLevel: 'HIGH', riskPercentage: 78.5, confidence: 92.4, predictionDate: new Date().toISOString().split('T')[0], contributingFactors: ['Elevated Systolic Blood Pressure (145 mmHg)', 'High Total Cholesterol (230 mg/dL)', 'Advanced Age (65 yrs)'], createdAt: new Date() },
+        { id: 'PRED-DIA-102', patientId: 'john_doe', predictionType: 'DIABETES', riskType: 'METABOLIC', riskLevel: 'HIGH', riskPercentage: 72.0, confidence: 94.1, predictionDate: new Date().toISOString().split('T')[0], contributingFactors: ['Diabetic HbA1c Level (7.5%)', 'High Body Mass Index (32.0)'], createdAt: new Date() },
+        { id: 'PRED-CVD-103', patientId: 'jane_smith', predictionType: 'CVD', riskType: 'CARDIO', riskLevel: 'MEDIUM', riskPercentage: 42.0, confidence: 89.5, predictionDate: new Date().toISOString().split('T')[0], contributingFactors: ['Prehypertension BP (132 mmHg)'], createdAt: new Date() },
+        { id: 'PRED-CVD-104', patientId: 'robert_j', predictionType: 'CVD', riskType: 'CARDIO', riskLevel: 'HIGH', riskPercentage: 85.0, confidence: 96.2, predictionDate: new Date().toISOString().split('T')[0], contributingFactors: ['Hypertension Crisis (185 mmHg)', 'Advanced Age (70 yrs)'], createdAt: new Date() },
+        { id: 'PRED-CVD-105', patientId: 'PAT101', predictionType: 'CVD', riskType: 'CARDIO', riskLevel: 'HIGH', riskPercentage: 81.5, confidence: 95.5, predictionDate: new Date().toISOString().split('T')[0], contributingFactors: ['Resting Tachycardia (135 bpm)', 'Low SpO2 (89%)'], createdAt: new Date() }
+      ]);
+
+      await RiskPrediction.insertMany([
+        { patientId: 'john_doe', risk: 'High', confidence: 92.4, score: 78.5, factors: ['Elevated Systolic Blood Pressure (145 mmHg)', 'High Total Cholesterol (230 mg/dL)'], timestamp: new Date() },
+        { patientId: 'jane_smith', risk: 'Medium', confidence: 89.5, score: 42.0, factors: ['Prehypertension BP (132 mmHg)'], timestamp: new Date() },
+        { patientId: 'robert_j', risk: 'High', confidence: 96.2, score: 85.0, factors: ['Hypertension Crisis (185 mmHg)'], timestamp: new Date() }
+      ]);
+
+      console.log('[AUTO-SEEDER] Database successfully populated with initial patients, providers, twins, alerts, predictions, and notifications!');
+    }
+  } catch (err) {
+    console.error('[AUTO-SEEDER] Seeding failed:', err.message);
+  }
+}
+
+function startContinuousTelemetryGenerator() {
+  setInterval(async () => {
+    try {
+      const patientList = await Patient.find({}).limit(8);
+      if (patientList.length === 0) return;
+
+      for (const p of patientList) {
+        const lastVital = await VitalRecord.findOne({ patientId: p._id }).sort({ recordedAt: -1 });
+
+        const baseHr = lastVital ? lastVital.heartRate : 75;
+        const baseSpo2 = lastVital ? lastVital.oxygenLevel : 97;
+        const baseTemp = lastVital ? lastVital.temperature : 36.7;
+
+        const hr = Math.max(52, Math.min(148, baseHr + Math.floor((Math.random() - 0.5) * 6)));
+        const spo2 = Math.max(88, Math.min(100, parseFloat((baseSpo2 + (Math.random() - 0.5) * 0.8).toFixed(1))));
+        const temp = parseFloat(Math.max(36.0, Math.min(39.5, baseTemp + (Math.random() - 0.5) * 0.2)).toFixed(1));
+        const sys = Math.max(105, Math.min(185, 125 + Math.floor((Math.random() - 0.5) * 10)));
+        const dia = Math.max(70, Math.min(115, 80 + Math.floor((Math.random() - 0.5) * 6)));
+        const rr = Math.max(12, Math.min(28, 16 + Math.floor((Math.random() - 0.5) * 3)));
+
+        const bpStr = `${sys}/${dia}`;
+
+        const vitalRecord = await VitalRecord.create({
+          id: `vit-${Date.now()}-${p._id}`,
+          patientId: p._id,
+          heartRate: hr,
+          oxygenLevel: spo2,
+          temperature: temp,
+          bloodPressure: bpStr,
+          respiratoryRate: rr,
+          recordedAt: new Date()
+        });
+
+        const age = calculateAgeFromDob(p.dateOfBirth);
+        const triggered = evaluateRules({ heartRate: hr, spo2, temperature: temp, systolic: sys, diastolic: dia, respiratoryRate: rr }, { age, conditions: p.medicalHistory });
+        const aiRiskObj = classifyRisk({ heartRate: hr, spo2, temperature: temp, systolic: sys, diastolic: dia, respiratoryRate: rr });
+
+        if (triggered.length > 0) {
+          for (const tr of triggered) {
+            const alertId = `ALT-LIVE-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+            const alertDoc = await Alert.create({
+              alertId,
+              patientId: p._id,
+              patientName: `${p.firstName} ${p.lastName}`,
+              severity: tr.severity,
+              type: tr.type,
+              message: tr.message,
+              confidence: aiRiskObj.confidence,
+              risk: aiRiskObj.risk,
+              vitals: { heartRate: hr, spo2, temperature: temp, bloodPressure: bpStr, respiratoryRate: rr },
+              status: 'NEW',
+              createdAt: new Date()
+            });
+
+            await NotificationLog.create({
+              patientId: p._id,
+              message: `[${tr.severity}] ${tr.message}`,
+              type: tr.severity,
+              status: 'UNREAD',
+              createdAt: new Date()
+            });
+
+            broadcastSSEEvent('alert', alertDoc);
+          }
+        }
+
+        broadcastSSEEvent('vitals', {
+          patientId: p._id,
+          vitals: { heartRate: hr, spo2, temperature: temp, bloodPressure: bpStr, respiratoryRate: rr },
+          aiRisk: aiRiskObj.risk,
+          aiConfidence: aiRiskObj.confidence,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (e) {
+      // Background loop
+    }
+  }, 5000);
+}
+
+
+app.listen(PORT, async () => {
   console.log(`Mock API Gateway running on port ${PORT}`);
+  await seedDatabaseIfEmpty();
+  startContinuousTelemetryGenerator();
 });

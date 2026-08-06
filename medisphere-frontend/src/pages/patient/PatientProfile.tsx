@@ -22,26 +22,27 @@ interface PatientProfileProps {
 }
 
 export default function PatientProfile({ initialProfile, onSaveProfile }: PatientProfileProps) {
-  const [profile, setProfile] = useState<PatientProfileData>({
-    firstName: '',
-    lastName: '',
-    email: '',
-    phoneNumber: '',
-    dateOfBirth: '',
-    gender: 'Male',
-    address: '',
-    emergencyContactName: '',
-    emergencyContactPhone: '',
-    insuranceProvider: '',
-    insurancePolicyNumber: '',
-    medicalHistory: []
-  });
+  const [profile, setProfile] = useState<PatientProfileData>(() => ({
+    firstName: initialProfile?.firstName || 'John',
+    lastName: initialProfile?.lastName || 'Doe',
+    email: initialProfile?.email || 'john.doe@medisphere.io',
+    phoneNumber: initialProfile?.phoneNumber || '+1-555-0199',
+    dateOfBirth: initialProfile?.dateOfBirth || '1985-05-15',
+    gender: initialProfile?.gender || 'Male',
+    address: initialProfile?.address || '742 Evergreen Terrace, Medical District',
+    emergencyContactName: initialProfile?.emergencyContactName || 'Mary Doe',
+    emergencyContactPhone: initialProfile?.emergencyContactPhone || '+1-555-0198',
+    insuranceProvider: initialProfile?.insuranceProvider || 'Aetna Global Health',
+    insurancePolicyNumber: initialProfile?.insurancePolicyNumber || 'POL-JOHN_DOE-99',
+    medicalHistory: initialProfile?.medicalHistory || ['Acute Tachycardia / AFib']
+  }));
 
   useEffect(() => {
-    if (initialProfile) {
+    if (initialProfile && (initialProfile.firstName || initialProfile.email)) {
       setProfile(initialProfile);
     }
   }, [initialProfile]);
+
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;

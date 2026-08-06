@@ -8,6 +8,7 @@ import com.infosys.medisphere.entity.Patient;
 import com.infosys.medisphere.entity.Appointment;
 import com.infosys.medisphere.entity.LabResult;
 import com.infosys.medisphere.entity.Prescription;
+import com.infosys.medisphere.entity.DoctorPatientAssignment;
 import com.infosys.medisphere.exception.ResourceNotFoundException;
 import com.infosys.medisphere.mapper.PatientMapper;
 import com.infosys.medisphere.publisher.PatientEventPublisher;
@@ -15,10 +16,12 @@ import com.infosys.medisphere.repository.PatientRepository;
 import com.infosys.medisphere.repository.AppointmentRepository;
 import com.infosys.medisphere.repository.LabResultRepository;
 import com.infosys.medisphere.repository.PrescriptionRepository;
+import com.infosys.medisphere.repository.DoctorPatientAssignmentRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -29,6 +32,7 @@ public class PatientServiceImpl implements PatientService {
     private final AppointmentRepository appointmentRepository;
     private final LabResultRepository labResultRepository;
     private final PrescriptionRepository prescriptionRepository;
+    private final DoctorPatientAssignmentRepository assignmentRepository;
     private final PatientMapper patientMapper;
     private final PatientEventPublisher eventPublisher;
 
@@ -36,12 +40,14 @@ public class PatientServiceImpl implements PatientService {
                               AppointmentRepository appointmentRepository,
                               LabResultRepository labResultRepository,
                               PrescriptionRepository prescriptionRepository,
+                              DoctorPatientAssignmentRepository assignmentRepository,
                               PatientMapper patientMapper,
                               PatientEventPublisher eventPublisher) {
         this.patientRepository = patientRepository;
         this.appointmentRepository = appointmentRepository;
         this.labResultRepository = labResultRepository;
         this.prescriptionRepository = prescriptionRepository;
+        this.assignmentRepository = assignmentRepository;
         this.patientMapper = patientMapper;
         this.eventPublisher = eventPublisher;
     }
@@ -109,6 +115,66 @@ public class PatientServiceImpl implements PatientService {
         log.info("Searching patients with query: {}", query);
         List<Patient> patients = patientRepository.searchByName(query);
         return patients.stream()
+                .map(patientMapper::toDto)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<PatientDTO> getAllPatients() {
+        log.info("Fetching all patients");
+        return patientRepository.findAll().stream()
+                .map(patientMapper::toDto)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public void assignPatientToDoctor(String patientId, String doctorUsername, String assignedBy) {
+        log.info("Assigning patient {} to doctor {}", patientId, doctorUsername);
+        if (!patientRepository.existsById(patientId)) {
+            throw new ResourceNotFoundException("Patient not found with ID: " + patientId);
+        }
+        if (assignmentRepository.findByDoctorUsernameAndPatientId(doctorUsername, patientId).isPresent()) {
+            log.info("Patient {} already assigned to doctor {}", patientId, doctorUsername);
+            return;
+        }
+        DoctorPatientAssignment assignment = DoctorPatientAssignment.builder()
+                .doctorUsername(doctorUsername)
+                .patientId(patientId)
+                .assignedBy(assignedBy)
+                .build();
+        assignmentRepository.save(assignment);
+    }
+
+    @Override
+    public void unassignPatientFromDoctor(String patientId, String doctorUsername) {
+        log.info("Unassigning patient {} from doctor {}", patientId, doctorUsername);
+        assignmentRepository.deleteByDoctorUsernameAndPatientId(doctorUsername, patientId);
+    }
+
+    @Override
+    public List<PatientDTO> getAssignedPatients(String doctorUsername) {
+        log.info("Getting assigned patients for doctor: {}", doctorUsername);
+        List<DoctorPatientAssignment> assignments = assignmentRepository.findByDoctorUsername(doctorUsername);
+        List<String> patientIds = assignments.stream()
+                .map(DoctorPatientAssignment::getPatientId)
+                .collect(Collectors.toList());
+        if (patientIds.isEmpty()) {
+            return List.of();
+        }
+        return patientRepository.findByIdIn(patientIds).stream()
+                .map(patientMapper::toDto)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<PatientDTO> getUnassignedPatients(String doctorUsername) {
+        log.info("Getting unassigned patients for doctor: {}", doctorUsername);
+        List<DoctorPatientAssignment> assignments = assignmentRepository.findByDoctorUsername(doctorUsername);
+        Set<String> assignedIds = assignments.stream()
+                .map(DoctorPatientAssignment::getPatientId)
+                .collect(Collectors.toSet());
+        return patientRepository.findAll().stream()
+                .filter(p -> !assignedIds.contains(p.getId()))
                 .map(patientMapper::toDto)
                 .collect(Collectors.toList());
     }

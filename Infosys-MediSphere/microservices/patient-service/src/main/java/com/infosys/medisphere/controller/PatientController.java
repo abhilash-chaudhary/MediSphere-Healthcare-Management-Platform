@@ -10,6 +10,7 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/patients")
@@ -25,6 +26,12 @@ public class PatientController {
     public ApiResponse<PatientDTO> createPatient(@Valid @RequestBody PatientDTO patientDTO) {
         PatientDTO created = patientService.createPatient(patientDTO);
         return ApiResponse.success(created, "Patient record created successfully");
+    }
+
+    @GetMapping
+    public ApiResponse<List<PatientDTO>> getAllPatients() {
+        List<PatientDTO> list = patientService.getAllPatients();
+        return ApiResponse.success(list, "All patients retrieved successfully");
     }
 
     @GetMapping("/{id}")
@@ -55,6 +62,36 @@ public class PatientController {
     public ApiResponse<List<PatientDTO>> searchPatients(@RequestParam String query) {
         List<PatientDTO> list = patientService.searchPatients(query);
         return ApiResponse.success(list, "Patient search completed");
+    }
+
+    // ===== Doctor-Patient Assignment Endpoints =====
+
+    @PostMapping("/assign")
+    public ApiResponse<Void> assignPatientToDoctor(@RequestBody Map<String, String> body) {
+        String patientId = body.get("patientId");
+        String doctorUsername = body.get("doctorUsername");
+        String assignedBy = body.getOrDefault("assignedBy", "admin");
+        patientService.assignPatientToDoctor(patientId, doctorUsername, assignedBy);
+        return ApiResponse.success(null, "Patient assigned to doctor successfully");
+    }
+
+    @DeleteMapping("/assign")
+    public ApiResponse<Void> unassignPatientFromDoctor(
+            @RequestParam String patientId, @RequestParam String doctorUsername) {
+        patientService.unassignPatientFromDoctor(patientId, doctorUsername);
+        return ApiResponse.success(null, "Patient unassigned from doctor successfully");
+    }
+
+    @GetMapping("/assigned")
+    public ApiResponse<List<PatientDTO>> getAssignedPatients(@RequestParam String doctorUsername) {
+        List<PatientDTO> list = patientService.getAssignedPatients(doctorUsername);
+        return ApiResponse.success(list, "Assigned patients retrieved successfully");
+    }
+
+    @GetMapping("/unassigned")
+    public ApiResponse<List<PatientDTO>> getUnassignedPatients(@RequestParam String doctorUsername) {
+        List<PatientDTO> list = patientService.getUnassignedPatients(doctorUsername);
+        return ApiResponse.success(list, "Unassigned patients retrieved successfully");
     }
 
     @GetMapping("/{id}/appointments")

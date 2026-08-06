@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import DigitalTwin3D from '../../3d/DigitalTwin3D';
+import { triggerEmergencySOS } from '../../services/sosService';
 
 interface Patient360Props {
   patientId: string;
@@ -50,6 +51,7 @@ interface Patient360Props {
   onFetchFhir: (resourceType: string) => void;
   fhirTab: string;
   onChangeFhirTab: (tab: 'patient' | 'observation' | 'medication') => void;
+  user?: { username: string; roles: string[] } | null;
 }
 
 // Fallback patient generator to ensure stability if dashboard360 is partial
@@ -114,8 +116,10 @@ export default function Patient360({
   fhirJson,
   onFetchFhir,
   fhirTab,
-  onChangeFhirTab
+  onChangeFhirTab,
+  user
 }: Patient360Props) {
+  const isDoctor = user?.roles?.some((r: string) => r.toUpperCase().includes('DOCTOR')) ?? false;
 
   // Robust safe data extraction
   const data = useMemo(() => {
@@ -177,8 +181,32 @@ export default function Patient360({
             </div>
           </div>
         </div>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          {!isDoctor && (
+            <button
+              onClick={() => {
+                triggerEmergencySOS(patientId || 'john_doe');
+                alert('🚨 Emergency SOS Triggered! Assigned doctor notified.');
+              }}
+              style={{
+                padding: '10px 18px',
+                borderRadius: '10px',
+                border: 'none',
+                background: 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)',
+                color: '#fff',
+                fontWeight: '800',
+                fontSize: '13px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: '0 0 20px rgba(220,38,38,0.4)'
+              }}
+            >
+              🚨 Emergency SOS
+            </button>
+          )}
 
-        <div style={{ display: 'flex', gap: '12px' }}>
           <button 
             onClick={onSyncFhir} 
             className="btn btn-secondary" 

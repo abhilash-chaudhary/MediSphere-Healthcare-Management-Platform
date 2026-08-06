@@ -79,23 +79,23 @@ public class AuthController {
         User user = userRepository.findByUsername(loginRequest.getUsername())
                 .orElseThrow(() -> new UnauthorizedException("User not found"));
 
-        // Generate 6-digit OTP code
-        String otpCode = "123456";
-        user.setOtpCode(otpCode);
-        user.setOtpExpiry(java.time.LocalDateTime.now().plusMinutes(5));
-        userRepository.save(user);
+        UserDetails userDetails = userDetailsService.loadUserByUsername(user.getUsername());
+        java.util.List<String> roles = userDetails.getAuthorities().stream()
+                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
+                .toList();
 
-        // Print to standard log for testing/readout
-        System.out.println("==================================================");
-        System.out.println("2FA OTP Code for User " + user.getUsername() + ": " + otpCode);
-        System.out.println("==================================================");
+        String accessToken = jwtUtils.generateToken(user.getUsername(), roles);
+        String refreshToken = jwtUtils.generateRefreshToken(user.getUsername());
 
         TokenResponse tokenResponse = TokenResponse.builder()
-                .otpRequired(true)
-                .email(user.getEmail())
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
+                .tokenType(SecurityConstants.TOKEN_PREFIX.trim())
+                .expiresIn(SecurityConstants.ACCESS_TOKEN_VALIDITY_SECONDS)
+                .otpRequired(false)
                 .build();
 
-        return ApiResponse.success(tokenResponse, "OTP verification required");
+        return ApiResponse.success(tokenResponse, "Login successful");
     }
 
     @PostMapping("/refresh")
@@ -206,5 +206,24 @@ public class AuthController {
     public ApiResponse<Void> logout() {
         SecurityContextHolder.clearContext();
         return ApiResponse.success(null, "Logged out successfully");
+    }
+
+    @GetMapping("/users")
+    public ApiResponse<java.util.List<UserDTO>> getUsersByRole(@RequestParam(required = false) String role) {
+        java.util.List<User> users;
+        if (role != null && !role.isEmpty()) {
+            users = userRepository.findByRolesContaining(role.toUpperCase());
+        } else {
+            users = userRepository.findAll();
+        }
+        java.util.List<UserDTO> dtos = users.stream()
+                .map(u -> UserDTO.builder()
+                        .id(u.getId())
+                        .username(u.getUsername())
+                        .email(u.getEmail())
+                        .roles(u.getRoles())
+                        .build())
+                .toList();
+        return ApiResponse.success(dtos, "Users retrieved successfully");
     }
 }

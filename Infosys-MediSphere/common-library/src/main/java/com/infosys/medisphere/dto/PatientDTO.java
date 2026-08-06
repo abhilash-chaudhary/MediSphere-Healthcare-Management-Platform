@@ -25,4 +25,10 @@ public class PatientDTO {
     private List<String> medicalHistory;
     private String insuranceProvider;
     private String insurancePolicyNumber;
+
+    // Clinical metadata
+    private String primaryCondition;
+    private String aiRisk;
+    private Double aiConfidence;
+    private Integer age;
 }

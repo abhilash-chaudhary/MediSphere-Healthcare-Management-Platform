@@ -7,6 +7,7 @@ import java.util.List;
 
 public interface PatientRepository extends MongoRepository<Patient, String> {
     List<Patient> findByLastNameIgnoreCase(String lastName);
+    List<Patient> findByIdIn(List<String> ids);
     
     @Query("{'$or':[ {'firstName': { $regex: ?0, $options: 'i' }}, {'lastName': { $regex: ?0, $options: 'i' }} ]}")
     List<Patient> searchByName(String nameQuery);

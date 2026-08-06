@@ -136,13 +136,13 @@ export default function AuditLogs({
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxH: '350px', overflowY: 'auto' }}>
-              {auditLogs.length === 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '350px', overflowY: 'auto' }}>
+              {(!auditLogs || auditLogs.length === 0) ? (
                 <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
                   No audit trail recorded.
                 </div>
               ) : (
-                auditLogs.map((log) => (
+                (auditLogs || []).map((log) => (
                   <div
                     key={log.id}
                     style={{
@@ -183,12 +183,12 @@ export default function AuditLogs({
             </h3>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {dlqLogs.length === 0 ? (
+              {(!dlqLogs || dlqLogs.length === 0) ? (
                 <div style={{ padding: '16px', color: 'var(--text-muted)', fontSize: '13px' }}>
                   No active DLQ messages recorded.
                 </div>
               ) : (
-                dlqLogs.map((record) => (
+                (dlqLogs || []).map((record) => (
                   <div
                     key={record.id}
                     style={{
