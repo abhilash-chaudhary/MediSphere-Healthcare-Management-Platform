@@ -106,6 +106,8 @@ Thanks to the following team members for building and contributing to **MediSphe
 | **Varshith** | [@Varshith0708](https://github.com/Varshith0708) | Core Developer / Contributor |
 | **Farheen Banu** | [@Farheen-Banu26](https://github.com/Farheen-Banu26) | Core Developer / Contributor |
 | **Kalpana Devi** | [@kalpanadevi1727](https://github.com/kalpanadevi1727) | Core Developer / Contributor |
+| **Ram Charan** | [@kamarajugaddaramcharan](https://github.com/kamarajugaddaramcharan) | Core Developer / Contributor |
+
 
 ---
 
